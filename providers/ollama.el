@@ -14,19 +14,6 @@
 
 (defvar partial-line "")
 
-;; select server
-
-(defvar *ollama-inference-servers* '((:local . "http://localhost:11434")))
-
-(defvar *ollama-server* (cdar *ollama-inference-servers*))
-
-(defun llm-api--ollama-select-server ()
-  (interactive)
-  ()
-  (let* ((server-name (completing-read "ollama server:" *ollama-inference-servers*))
-         (server-url (alist-get (intern server-name) *ollama-inference-servers*)))
-    (setq *ollama-server* server-url)))
-
 ;; dynamic model list
 
 (defvar *ollama-models* nil)
@@ -45,6 +32,19 @@
   (or *ollama-models* (llm-api--ollama-refresh-models))
   (setf (llm-api--platform-available-models platform) *ollama-models*)
   *ollama-models*)
+
+;; select server
+
+(defvar *ollama-inference-servers* '((:local . "http://localhost:11434")))
+
+(defvar *ollama-server* (cdar *ollama-inference-servers*))
+
+(defun llm-api--ollama-select-server ()
+  (interactive)
+  (let* ((server-name (completing-read "ollama server:" *ollama-inference-servers*))
+         (server-url (alist-get (intern server-name) *ollama-inference-servers*)))
+    (setq *ollama-server* server-url)
+    (llm-api--ollama-refresh-models)))
 
 ;; history
 
