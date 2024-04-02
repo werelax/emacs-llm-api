@@ -100,29 +100,25 @@
 ;; request filter
 
 (cl-defmethod llm-api--response-filter ((platform llm-api--ollama) on-data _process output)
-  (message "llm-api--response-filter: '%s'" output)
+  ;; (message "llm-api--response-filter: '%s'" output)
   (let ((lines (split-string output "?\n")))
     (dolist (line lines)
-      (when (string-prefix-p  "data: " line)
-        (setq line (substring line (length "data: ")))
-        (message "llm-api--response-filter DATA-LINE: '%s'" line)
-        (when (and (not (string-empty-p line))
-                   (not (string= line "[DONE]")))
-          (condition-case nil
-              (let ((chunk (json-parse-string line :object-type 'plist :array-type 'list)))
-                (setq partial-line "")
-                (when (and (listp chunk))
-                  (let* ((message (plist-get chunk :message))
-                         (content-delta (plist-get message :content))
-                         (done (plist-get chunk :done)))
-                    (when (stringp content-delta)
-                      (cl-callf concat (llm-api--platform-last-response platform) content-delta))
-                    (when (and (stringp content-delta)
-                               (functionp on-data))
-                      (funcall on-data content-delta)))))
-            (error
-             ;; probably the json line wasn't complete
-             (setq partial-line line))))))))
+      (when (not (string-empty-p line))
+        (condition-case nil
+            (let ((chunk (json-parse-string line :object-type 'plist :array-type 'list)))
+              (setq partial-line "")
+              (when (and (listp chunk))
+                (let* ((message (plist-get chunk :message))
+                       (content-delta (plist-get message :content))
+                       (done (plist-get chunk :done)))
+                  (when (stringp content-delta)
+                    (cl-callf concat (llm-api--platform-last-response platform) content-delta))
+                  (when (and (stringp content-delta)
+                             (functionp on-data))
+                    (funcall on-data content-delta)))))
+          (error
+           ;; probably the json line wasn't complete
+           (setq partial-line line)))))))
 
 ;; factory
 

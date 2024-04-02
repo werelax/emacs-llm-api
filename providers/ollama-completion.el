@@ -16,7 +16,6 @@
 
 (defvar partial-line "")
 
-
 ;; dynamic model list
 
 (defvar *ollama-models* nil)
@@ -109,38 +108,39 @@
 (cl-defmethod llm-api--response-filter ((platform llm-api--ollama-comp) on-data _process output)
   ;; (message "llm-api--response-filter: '%s'" output)
   ;; if it ends with a partial line (not \n at the end) then remove it and save it
-  (when-let ((idx (string-match-p "\n[^\n]+\\'" output)))
-    (setq partial-line (concat partial-line (substring output (1+ idx))))
-    (setq output (substring output 0 idx)))
-  ;; split by newline
-  (let ((lines (split-string output "
+  (let ((prev-partial-line partial-line))
+    (when-let ((idx (string-match-p "\n[^\n]+\\'" output)))
+      (setq partial-line (concat partial-line (substring output (1+ idx))))
+      (setq output (substring output 0 idx)))
+    ;; split by newline
+    (let ((lines (split-string output "
 ?\n")))
-    (dolist (line lines)
-      ;; (message "llm-api--response-filter DATA-LINE: '%s'" line)
-      ;; newline token
-      (when (and (not (string-empty-p line))
-                 (not (string= line "[DONE]")))
-        (condition-case nil
-            (let ((chunk (json-parse-string
-                          (concat partial-line line)
-                          :object-type 'plist :array-type 'list)))
-              (setq partial-line "")
-              (when (and (listp chunk))
-                (let* ((raw-content-delta (plist-get chunk :response))
-                       ;; newline token
-                       (content-delta (s-replace "\u003c0x0A\u003e" "\n" raw-content-delta))
-                       (context (plist-get chunk :context))
-                       (done (plist-get chunk :done)))
-                  (when (stringp content-delta)
-                    (cl-callf concat (llm-api--platform-last-response platform) content-delta))
-                  (when (eq done t)
-                    (setf (llm-api--ollama-comp-context platform) context))
-                  (when (and (stringp content-delta)
-                             (functionp on-data))
-                    (funcall on-data content-delta)))))
-          (error
-           ;; probably the json line wasn't complete
-           (setq partial-line line)))))))
+      (dolist (line lines)
+        ;; (message "llm-api--response-filter DATA-LINE: '%s'" line)
+        ;; newline token
+        (when (and (not (string-empty-p line))
+                   (not (string= line "[DONE]")))
+          (condition-case nil
+              (let ((chunk (json-parse-string
+                            (concat prev-partial-line line)
+                            :object-type 'plist :array-type 'list)))
+                (setq partial-line "")
+                (when (and (listp chunk))
+                  (let* ((raw-content-delta (plist-get chunk :response))
+                         ;; newline token
+                         (content-delta (s-replace "\u003c0x0A\u003e" "\n" raw-content-delta))
+                         (context (plist-get chunk :context))
+                         (done (plist-get chunk :done)))
+                    (when (stringp content-delta)
+                      (cl-callf concat (llm-api--platform-last-response platform) content-delta))
+                    (when (eq done t)
+                      (setf (llm-api--ollama-comp-context platform) context))
+                    (when (and (stringp content-delta)
+                               (functionp on-data))
+                      (funcall on-data content-delta)))))
+            (error
+             ;; probably the json line wasn't complete
+             (setq partial-line line))))))))
 
 ;; factory
 
