@@ -73,6 +73,8 @@
     `(:model ,model-id
       :messages ,(llm-api--get-history platform)
       :options ((:temperature . ,temperature)
+                ;; do not unload the model after 5min
+                (:keep_alive . -1)
                 ;; :top_k . 20
                 ;; :top_p . 0.9
                 ;; :tfs_z . 0.5

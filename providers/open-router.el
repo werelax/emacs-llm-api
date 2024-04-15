@@ -62,7 +62,6 @@
     (dolist (line lines)
       (when (string-prefix-p  "data: " line)
         (setq line (substring line (length "data: ")))
-        (message "llm-api--response-filter: '%s'" line)
         ;; (message "llm-api--response-filter DATA-LINE: '%s'" line)
         (when (and (not (string-empty-p line))
                    (not (string= line "[DONE]")))
