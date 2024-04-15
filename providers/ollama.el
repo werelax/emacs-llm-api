@@ -16,7 +16,8 @@
 
 ;; dynamic model list
 
-(defvar *ollama-models* nil)
+(defvar *ollama-models* nil "List of available models.")
+(defvar *ollama-num-ctx* nil "Override size of the model's context window.")
 
 (defun llm-api--ollama-refresh-models ()
   (interactive)
@@ -72,9 +73,10 @@
     ;; the actual payload
     `(:model ,model-id
       :messages ,(llm-api--get-history platform)
+      :keep_alive -1
       :options ((:temperature . ,temperature)
-                ;; do not unload the model after 5min
-                (:keep_alive . -1)
+                ;; to avoid modifying every Modelfile
+                ,@(when *ollama-num-ctx* `((:num_ctx . ,*ollama-num-ctx*)))
                 ;; :top_k . 20
                 ;; :top_p . 0.9
                 ;; :tfs_z . 0.5
