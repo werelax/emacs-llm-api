@@ -137,6 +137,11 @@
 (cl-defmethod llm-api--generate-streaming ((platform llm-api--platform) (prompt string) &rest args)
   "Query PLATFORM for PROMPT. ARGS for more control."
   ;; add user message to history
+  ;; TODO: now I see that this is a mistake!
+  ;;       it would be very convenient if the function that generates the
+  ;;       response does *not* take a prompt paramter, and uses the history
+  ;;       as it is instead. It would make history manipulations easier
+  ;;       like *regenerate* or *generation trees* (like sillytavern).
   (llm-api--add-to-history platform `((:role . :user) (:content . ,prompt)))
   ;; call the API
   (let* ((on-data (plist-get args :on-data))
