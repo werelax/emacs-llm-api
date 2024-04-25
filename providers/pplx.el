@@ -11,8 +11,11 @@
                        "sonar-medium-online"
                        "mistral-7b-instruct"
                        "mixtral-8x7b-instruct"
-                       "codellama-70b-instruct")
+                       "codellama-70b-instruct"
+                       "llama-3-8b-instruct"
+                       "llama-3-70b-instruct"
+                       "mixtral-8x22b-instruct")
    :selected-model "sonar-medium-online"
    :system-prompt "You are a sentient superintelligent AI assistant.
  Help the user with precision."
-   :params '(:temperature 0.2)))
+   :params '(:temperature 0.7)))
