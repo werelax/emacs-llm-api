@@ -167,18 +167,24 @@
       (push "-H" curl-params))
     ;; full command
     ;; (message "curl params: %s" (json-encode request-payload))
-    (let ((curl-command `("curl"
-                          ,(llm-api--get-curl-url platform)
-                          ,@curl-params
-                          "-d" ,(json-encode request-payload))))
-      ;; (message "llm-api--server: %s" curl-command)
-      (let ((process (make-process :name (format "llm-api--server-%s" (llm-api--platform-name platform))
-                                   :buffer (llm-api--platform-process-buffer-name platform)
-                                   :command curl-command
-                                   :filter filter
-                                   :sentinel sentinel
-                                   :connection-type 'pipe
-                                   :noquery t)))
-        (setf (llm-api--platform-process platform) process)))))
+    (let ((temp-file (make-temp-file "llm-api-payload-")))
+      (with-temp-file temp-file
+        (insert (json-encode request-payload)))
+      (let ((curl-command `("curl"
+                            ,(llm-api--get-curl-url platform)
+                            ,@curl-params
+                            "-d" ,(concat "@" temp-file))))
+        (let ((process (make-process :name (format "llm-api--server-%s" (llm-api--platform-name platform))
+                                     :buffer (llm-api--platform-process-buffer-name platform)
+                                     :command curl-command
+                                     :filter filter
+                                     :sentinel (lambda (process event)
+                                                 (funcall sentinel process event)
+                                                 ;; delete the temporary file
+                                                 (delete-file temp-file))
+                                     ;; :sentinel sentile
+                                     :connection-type 'pipe
+                                     :noquery t)))
+          (setf (llm-api--platform-process platform) process))))))
 
 (file-name-directory load-file-name)
