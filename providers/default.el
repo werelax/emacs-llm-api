@@ -142,7 +142,9 @@
   ;;       response does *not* take a prompt paramter, and uses the history
   ;;       as it is instead. It would make history manipulations easier
   ;;       like *regenerate* or *generation trees* (like sillytavern).
-  (llm-api--add-to-history platform `((:role . :user) (:content . ,prompt)))
+  ;; add string to history when non-empty
+  (when (not (string-empty-p prompt))
+    (llm-api--add-to-history platform `((:role . :user) (:content . ,prompt))))
   ;; call the API
   (let* ((on-data (plist-get args :on-data))
          (on-finish (plist-get args :on-finish))

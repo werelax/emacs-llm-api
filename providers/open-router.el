@@ -87,7 +87,7 @@
 (cl-defmethod llm-api--get-request-payload ((platform llm-api--open-router))
   (let ((payload (cl-call-next-method platform)))
     (setf (plist-get payload :transforms) '("middle-out"))
-    (setf (plist-get payload :max_tokens) 4096)
+    (setf (plist-get payload :max_tokens) (* 128 1024))
     payload))
 
 (defun llm--create-open-router-platform (token)
