@@ -98,4 +98,4 @@
    :selected-model "gryphe/mythomist-7b"
    :system-prompt "You are a sentient superintelligent AI assistant.
  Help the user with precision."
-   :params '(:temperature 0.2)))
+   :params '(:temperature 0.7)))
