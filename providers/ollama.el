@@ -68,8 +68,6 @@
          (model-id (if (stringp model) model (plist-get model :model)))
          (get-param (lambda (key) (or (plist-get model-params key) (plist-get params key))))
          (temperature (funcall get-param :temperature)))
-    ;; sneak the partial-line cleansing
-    (setq partial-line "")
     ;; the actual payload
     `(:model ,model-id
       :messages ,(llm-api--get-history platform)
@@ -108,21 +106,16 @@
   (let ((lines (split-string output "?\n")))
     (dolist (line lines)
       (when (not (string-empty-p line))
-        (condition-case nil
-            (let ((chunk (json-parse-string line :object-type 'plist :array-type 'list)))
-              (setq partial-line "")
-              (when (and (listp chunk))
-                (let* ((message (plist-get chunk :message))
-                       (content-delta (plist-get message :content))
-                       (done (plist-get chunk :done)))
-                  (when (stringp content-delta)
-                    (cl-callf concat (llm-api--platform-last-response platform) content-delta))
-                  (when (and (stringp content-delta)
-                             (functionp on-data))
-                    (funcall on-data content-delta)))))
-          (error
-           ;; probably the json line wasn't complete
-           (setq partial-line line)))))))
+        (let ((chunk (json-parse-string line :object-type 'plist :array-type 'list)))
+          (when (and (listp chunk))
+            (let* ((message (plist-get chunk :message))
+                   (content-delta (plist-get message :content))
+                   (done (plist-get chunk :done)))
+              (when (stringp content-delta)
+                (cl-callf concat (llm-api--platform-last-response platform) content-delta))
+              (when (and (stringp content-delta)
+                         (functionp on-data))
+                (funcall on-data content-delta)))))))))
 
 ;; factory
 
