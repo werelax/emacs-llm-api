@@ -57,6 +57,12 @@
   (let ((history (llm-api--platform-history platform)))
     (setf (llm-api--platform-history platform) (nconc history (list message)))))
 
+(cl-defmethod llm-api--remove-last-from-history ((platform llm-api--platform))
+  "Remove the last message from history for the given PLATFORM."
+  (let ((history (llm-api--platform-history platform)))
+    (when history  ; Ensure the history is not empty.
+      (setf (llm-api--platform-history platform) (butlast history)))))
+
 (cl-defmethod llm-api--add-generated-message-to-history ((platform llm-api--platform))
   "Add generated :assistant response to PLATFORM chat history."
   (let ((last-response (llm-api--platform-last-response platform)))

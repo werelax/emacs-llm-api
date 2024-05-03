@@ -77,6 +77,9 @@
 (cl-defgeneric llm-api--add-to-history (platform message)
   "Add MESSAGE to the history. Optionally specify the PLATFORM.")
 
+(cl-defgeneric llm-api--remove-last-from-history (platform)
+  "Remove the last message from history. Optionally specify the PLATFORM.")
+
 (cl-defgeneric llm-api--get-request-headers (platform)
   "Get the request headers for PLATFORM.")
 
@@ -86,7 +89,7 @@
 (cl-defgeneric llm-api--get-curl-params (platform)
   "Get the curl command params for PLATFORM.")
 
-(cl-defmethod llm-api--get-curl-url (platfrom)
+(cl-defmethod llm-api--get-curl-url (platform)
   "Get the curl command url for PLATFORM.")
 
 (cl-defgeneric llm-api--response-filter (platform process output)
