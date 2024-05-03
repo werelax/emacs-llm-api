@@ -26,7 +26,7 @@
 
 (defun llm-api--response-filter-process-line (platform chunk on-data)
   "Process one line of json (CHUNK) and maybe call ON-DATA."
-  (message "CHUNK: %s" chunk)
+  ;; (message "CHUNK: %s" chunk)
   (when (and (listp chunk)
              (eq nil (plist-get chunk :finish_reason)))
     (let ((choices (plist-get chunk :choices)))
