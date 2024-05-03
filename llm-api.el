@@ -113,7 +113,8 @@
   (load (expand-file-name "./providers/ollama.el" base-dir))
   (load (expand-file-name "./providers/ollama-completion.el" base-dir))
   (load (expand-file-name "./providers/pplx.el" base-dir))
-  (load (expand-file-name "./providers/togetherai.el" base-dir)))
+  (load (expand-file-name "./providers/togetherai.el" base-dir))
+  (load (expand-file-name "./providers/awan-llm.el" base-dir)))
 
 (provide 'llm-api)
 ;;; llm-api.el ends here

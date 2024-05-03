@@ -186,5 +186,3 @@
                                      :connection-type 'pipe
                                      :noquery t)))
           (setf (llm-api--platform-process platform) process))))))
-
-(file-name-directory load-file-name)
