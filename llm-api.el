@@ -40,7 +40,8 @@
   process-buffer-name
   process-buffer
   ;; state
-  last-response)
+  last-response
+  finish-reason)
 
 (cl-defmethod initialize-instance :after ((platform llm-api--platform) &rest _)
   "Initialize PLATFORM."
@@ -95,8 +96,9 @@
 (cl-defgeneric llm-api--response-filter (platform process output)
   "Process OUTPUT of PROCESS for given PLATFORM.")
 
-(cl-defgeneric llm-api--process-sentinel (platform process event)
-  "Process sentinel function. Optionally specify the PROCESS and PLATFORM.")
+(cl-defgeneric llm-api--process-sentinel (platform on-finish continue process event)
+  "Process sentinel function. ON-FINISH and CONITNUE to decide how to react.
+Optionally specify the PROCESS and PLATFORM.")
 
 (cl-defgeneric llm-api--on-generation-finish-hook (platform)
   "Hook called after PLATFORM has finished generating a resonse.")

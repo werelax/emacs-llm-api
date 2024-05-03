@@ -57,30 +57,36 @@
 ;; {"id":"gen-zzxbiiFVvze5xbXnax7rOufQPNkr","model":"databricks/dbrx-instruct","object":"chat.completion.chunk","created":1712077962,
 ;; "choices":[{"index":0,"delta":{"role":"assistant","content":"\n"},"finish_reason":null}]}’
 
-(cl-defmethod llm-api--response-filter ((platform llm-api--open-router) on-data _process output)
-  (let ((lines (split-string output "?\n")))
-    (dolist (line lines)
-      (when (string-prefix-p  "data: " line)
-        (setq line (substring line (length "data: ")))
-        ;; (message "llm-api--response-filter DATA-LINE: '%s'" line)
-        (when (and (not (string-empty-p line))
-                   (not (string= line "[DONE]")))
-          (let ((chunk (json-parse-string line :object-type 'plist :array-type 'list)))
-            (when (and (listp chunk)
-                       (eq nil (plist-get chunk :finish_reason)))
-              (let ((choices (plist-get chunk :choices)))
-                (when (and (listp choices)
-                           (> (length choices) 0))
-                  (let* ((choice (car choices))
-                         (delta (plist-get choice :delta))
-                         (content-delta (plist-get delta :content)))
-                    ;; store last response (full response on last filter call)
-                    (when (stringp content-delta)
-                      (cl-callf concat (llm-api--platform-last-response platform) content-delta))
-                    ;; stream the deltas
-                    (when (and (stringp content-delta)
-                               (functionp on-data))
-                      (funcall on-data content-delta))))))))))))
+;; (cl-defmethod llm-api--response-filter ((platform llm-api--open-router) on-data _process output)
+;;   (let ((lines (split-string output "?\n")))
+;;     (dolist (line lines)
+;;       (when (string-prefix-p  "data: " line)
+;;         (setq line (substring line (length "data: ")))
+;;         ;; (message "llm-api--response-filter DATA-LINE: '%s'" line)
+;;         (when (and (not (string-empty-p line))
+;;                    (not (string= line "[DONE]")))
+;;           (let ((chunk (json-parse-string line :object-type 'plist :array-type 'list)))
+;;             ;; the ONLY think different from the default implementation is:
+;;             ;;  - this line: (string= "chat.completion" (plist-get chunk :object)))
+;;             ;;  - becomes: (eq nil (plist-get chunk :finish_reason)))
+;;             ;; becuase the response is not fully compatible :/
+;;             (when (and (listp chunk)
+;;                        (eq nil (plist-get chunk :finish_reason)))
+;;               (let ((choices (plist-get chunk :choices)))
+;;                 (when (and (listp choices)
+;;                            (> (length choices) 0))
+;;                   (let* ((choice (car choices))
+;;                          (delta (plist-get choice :delta))
+;;                          (finish-reason (plist-get choice :finish_reason))
+;;                          (content-delta (plist-get delta :content)))
+;;                     ;; store last response (full response on last filter call)
+;;                     (message "* FINISH: %s" chunk)
+;;                     (when (stringp content-delta)
+;;                       (cl-callf concat (llm-api--platform-last-response platform) content-delta))
+;;                     ;; stream the deltas
+;;                     (when (and (stringp content-delta)
+;;                                (functionp on-data))
+;;                       (funcall on-data content-delta))))))))))))
 
 ;; fix the payload a little bit
 
@@ -88,6 +94,7 @@
   (let ((payload (cl-call-next-method platform)))
     (setf (plist-get payload :transforms) '("middle-out"))
     (setf (plist-get payload :max_tokens) (* 128 1024))
+    ;; (setf (plist-get payload :max_tokens) 4000)
     payload))
 
 (defun llm--create-open-router-platform (token)
