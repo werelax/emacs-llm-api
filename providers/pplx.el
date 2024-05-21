@@ -5,15 +5,13 @@
    :name "pplx"
    :url "https://api.perplexity.ai/chat/completions"
    :token token
-   :available-models '("sonar-small-chat"
-                       "sonar-small-online"
-                       "sonar-medium-chat"
-                       "sonar-medium-online"
-                       "mistral-7b-instruct"
-                       "mixtral-8x7b-instruct"
-                       "codellama-70b-instruct"
+   :available-models '("llama-3-sonar-small-32k-chat"
+                       "llama-3-sonar-small-32k-online"
+                       "llama-3-sonar-large-32k-chat"
+                       "llama-3-sonar-large-32k-online"
                        "llama-3-8b-instruct"
                        "llama-3-70b-instruct"
+                       "mixtral-8x7b-instruct"
                        "mixtral-8x22b-instruct")
    :selected-model "sonar-medium-online"
    :system-prompt "You are a sentient superintelligent AI assistant.
