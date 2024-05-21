@@ -24,25 +24,6 @@
   (setf (llm-api--platform-available-models platform) *awan-llm-models*)
   (mapcar (lambda (m) (plist-get m :name)) *awan-llm-models*))
 
-(defun llm-api--response-filter-process-line (platform chunk on-data)
-  "Process one line of json (CHUNK) and maybe call ON-DATA."
-  ;; (message "CHUNK: %s" chunk)
-  (when (and (listp chunk)
-             (eq nil (plist-get chunk :finish_reason)))
-    (let ((choices (plist-get chunk :choices)))
-      (when (and (listp choices)
-                 (> (length choices) 0))
-        (let* ((choice (car choices))
-               (delta (plist-get choice :delta))
-               (content-delta (plist-get delta :content)))
-          ;; store last response (full response on last filter call)
-          (when (stringp content-delta)
-            (cl-callf concat (llm-api--platform-last-response platform) content-delta))
-          ;; stream the deltas
-          (when (and (stringp content-delta)
-                     (functionp on-data))
-            (funcall on-data content-delta)))))))
-
 (cl-defmethod llm-api--response-filter ((platform llm-api--awan-llm) on-data _process output)
   (message "llm-api--response-filter: '%s'" output)
   (let ((lines (split-string output "?\n"))
@@ -73,7 +54,6 @@
     payload))
 
 (defun llm--create-awan-llm-platform (token)
-  (message "TOKEN: %s" token)
   (llm-api--awan-llm-create
    :name "awan-llm"
    :url "https://api.awanllm.com/v1/chat/completions"
