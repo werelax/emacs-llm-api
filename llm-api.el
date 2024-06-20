@@ -120,7 +120,8 @@ Optionally specify the PROCESS and PLATFORM.")
   (load (expand-file-name "./providers/pplx.el" base-dir))
   (load (expand-file-name "./providers/togetherai.el" base-dir))
   (load (expand-file-name "./providers/awan-llm.el" base-dir))
-  (load (expand-file-name "./providers/groq.el" base-dir)))
+  (load (expand-file-name "./providers/groq.el" base-dir))
+  (load (expand-file-name "./providers/featherless.el" base-dir)))
 
 (provide 'llm-api)
 ;;; llm-api.el ends here
