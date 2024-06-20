@@ -187,6 +187,7 @@
       (push "-H" curl-params))
     ;; full command
     ;; (message "curl params: %s" (json-encode request-payload))
+    ;; (message "curl params: %s" (json-encode curl-params))
     (let ((temp-file (make-temp-file "llm-api-payload-")))
       (with-temp-file temp-file
         (insert (json-encode request-payload)))

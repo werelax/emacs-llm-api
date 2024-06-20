@@ -38,10 +38,9 @@
     payload))
 
 (defun llm--create-featherless-platform (token)
-  (message "TOKEN %s" token)
   (llm-api--featherless-create
    :name "featherless"
-   :url "https://api.featherless.ai/v1"
+   :url "https://api.featherless.ai/v1/chat/completions"
    :token token
    :selected-model (plist-get (car *featherless-models*) :model)
    :system-prompt "You are a sentient superintelligent AI assistant.
