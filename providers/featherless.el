@@ -34,7 +34,6 @@
 (cl-defmethod llm-api--get-request-payload ((platform llm-api--featherless))
   (let ((payload (cl-call-next-method platform)))
     (setf (plist-get payload :max_tokens) 4096)
-    (message "featherless get request payload %s" payload)
     payload))
 
 (defun llm--create-featherless-platform (token)
