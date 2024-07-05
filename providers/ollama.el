@@ -35,12 +35,13 @@
          (models-data (alist-get 'models response))
          (models (mapcar (lambda (m) (let ((details (alist-get 'details m))
                                            (name (alist-get 'name m)))
-                                       (format "%s:%s %s"
-                                               (format "%+2sB" (extract-number (alist-get 'parameter_size details)))
-                                               (format "%s" (downcase (get-until
-                                                                       (alist-get 'quantization_level details)
-                                                                       "_")))
-                                               (get-until name ":"))))
+                                       `(:model ,name
+                                         :name  ,(format "%s:%s %s"
+                                                         (format "%+2sB" (extract-number (alist-get 'parameter_size details)))
+                                                         (format "%s" (downcase (get-until
+                                                                                 (alist-get 'quantization_level details)
+                                                                                 "_")))
+                                                         (get-until name ":")))))
                          models-data)))
     (spinner-stop)
     (setq *ollama-models* models)))
@@ -48,7 +49,7 @@
 (cl-defmethod llm-api--get-available-models ((platform llm-api--ollama))
   (or *ollama-models* (llm-api--ollama-refresh-models))
   (setf (llm-api--platform-available-models platform) *ollama-models*)
-  *ollama-models*)
+  (cl-call-next-method))
 
 ;; select server
 
