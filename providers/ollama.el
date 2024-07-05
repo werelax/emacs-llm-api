@@ -19,13 +19,29 @@
 (defvar *ollama-models* nil "List of available models.")
 (defvar *ollama-num-ctx* nil "Override size of the model's context window.")
 
+(defun get-until (haystack needle)
+  (car (split-string haystack needle)))
+
+(defun extract-number (s)
+  (if (string-match "\\([0-9]+\\)" s)
+      (match-string 1 s)
+    nil))
+
 (defun llm-api--ollama-refresh-models ()
   (interactive)
   (spinner-start)
   (let* ((url (concat *ollama-server* "/api/tags"))
          (response (plz 'get url :as #'json-read))
          (models-data (alist-get 'models response))
-         (models (mapcar (lambda (m) (alist-get 'name m)) models-data)))
+         (models (mapcar (lambda (m) (let ((details (alist-get 'details m))
+                                           (name (alist-get 'name m)))
+                                       (format "%s:%s %s"
+                                               (format "%+2sB" (extract-number (alist-get 'parameter_size details)))
+                                               (format "%s" (downcase (get-until
+                                                                       (alist-get 'quantization_level details)
+                                                                       "_")))
+                                               (get-until name ":"))))
+                         models-data)))
     (spinner-stop)
     (setq *ollama-models* models)))
 
