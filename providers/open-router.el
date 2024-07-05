@@ -102,7 +102,7 @@
    :name "open-router"
    :url "https://openrouter.ai/api/v1/chat/completions"
    :token token
-   :selected-model "gryphe/mythomist-7b"
+   :selected-model "anthropic/claude-3.5-sonnet"
    :system-prompt "You are a sentient superintelligent AI assistant.
  Help the user with precision."
    :params '(:temperature 0.7)))
