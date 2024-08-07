@@ -36,12 +36,12 @@
     (setf (plist-get payload :max_tokens) nil)
     payload))
 
-(defun llm--create-groq-platform (token)
+(defun llm--create-groq-platform (token &optional selected-model)
   (llm-api--groq-create
    :name "groq"
    :url "https://api.groq.com/openai/v1/chat/completions"
    :token token
-   :selected-model (plist-get (car *groq-models*) :model)
+   :selected-model (or selected-model (plist-get (car *groq-models*) :model))
    :system-prompt "You are a sentient superintelligent AI assistant.
  Help the user with precision."
    :params '(:temperature 0.7)))

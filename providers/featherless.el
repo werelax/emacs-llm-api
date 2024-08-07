@@ -36,12 +36,12 @@
     (setf (plist-get payload :max_tokens) 4096)
     payload))
 
-(defun llm--create-featherless-platform (token)
+(defun llm--create-featherless-platform (token &optional selected-model)
   (llm-api--featherless-create
    :name "featherless"
    :url "https://api.featherless.ai/v1/chat/completions"
    :token token
-   :selected-model (plist-get (car *featherless-models*) :model)
+   :selected-model (or selected-model (plist-get (car *featherless-models*) :model))
    :system-prompt "You are a sentient superintelligent AI assistant.
  Help the user with precision."
    :params '(:temperature 0.7)))

@@ -97,12 +97,12 @@
     ;; (setf (plist-get payload :max_tokens) 4000)
     payload))
 
-(defun llm--create-open-router-platform (token)
+(defun llm--create-open-router-platform (token &optional selected-model)
   (llm-api--open-router-create
    :name "open-router"
    :url "https://openrouter.ai/api/v1/chat/completions"
    :token token
-   :selected-model "anthropic/claude-3.5-sonnet"
+   :selected-model (or selected-model "anthropic/claude-3.5-sonnet")
    :system-prompt "You are a sentient superintelligent AI assistant.
  Help the user with precision."
    :params '(:temperature 0.7)))

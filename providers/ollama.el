@@ -136,8 +136,8 @@
 
 ;; factory
 
-(defun llm--create-ollama-platform ()
+(defun llm--create-ollama-platform (&optional selected-model)
   (llm-api--ollama-create
    :name "ollama"
-   :selected-model "dolphin2.1-mistral"
+   :selected-model (or selected-model "gemma2:27b-instruct-q4_K_M")
    :params `(:temperature 0.2)))
