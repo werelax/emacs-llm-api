@@ -48,7 +48,9 @@
   "Get the history for PLATFORM."
   (let ((history (llm-api--platform-history platform)))
     (when-let ((system-prompt (llm-api--platform-system-prompt platform)))
-      (push `((:role . :system) (:content . ,system-prompt)) history))
+      (when (not (string-empty-p system-prompt))
+        ;; (message "SYSTEM PROMPT: %s" system-prompt)
+        (push `((:role . :system) (:content . ,system-prompt)) history)))
     ;; (message "HISTORY: %s" history)
     history))
 
@@ -195,6 +197,7 @@
                             ,(llm-api--get-curl-url platform)
                             ,@curl-params
                             "-d" ,(concat "@" temp-file))))
+        ;; (message "curl command: %s" curl-command)
         (let ((process (make-process :name (format "llm-api--server-%s" (llm-api--platform-name platform))
                                      :buffer (llm-api--platform-process-buffer-name platform)
                                      :command curl-command
