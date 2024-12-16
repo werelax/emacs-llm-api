@@ -33,16 +33,23 @@
   (let* ((url (concat *ollama-server* "/api/tags"))
          (response (plz 'get url :as #'json-read))
          (models-data (alist-get 'models response))
+         ;; Filter out models with "M" in parameter_size
+         (filtered-models (cl-remove-if
+                         (lambda (m)
+                           (let* ((details (alist-get 'details m))
+                                  (param-size (alist-get 'parameter_size details)))
+                             (string-match-p "M" param-size)))
+                         models-data))
          (models (mapcar (lambda (m) (let ((details (alist-get 'details m))
-                                           (name (alist-get 'name m)))
-                                       `(:model ,name
-                                         :name  ,(format "%s:%s %s"
-                                                         (format "%+2sB" (extract-number (alist-get 'parameter_size details)))
-                                                         (format "%s" (downcase (get-until
-                                                                                 (alist-get 'quantization_level details)
-                                                                                 "_")))
-                                                         (get-until name ":")))))
-                         models-data)))
+                                          (name (alist-get 'name m)))
+                                      `(:model ,name
+                                        :name  ,(format "%s:%s %s"
+                                                        (format "%+2sB" (extract-number (alist-get 'parameter_size details)))
+                                                        (format "%s" (downcase (get-until
+                                                                                (alist-get 'quantization_level details)
+                                                                                "_")))
+                                                        (get-until name ":")))))
+                        filtered-models)))
     (spinner-stop)
     (setq *ollama-models* models)))
 
@@ -120,7 +127,8 @@
 
 (cl-defmethod llm-api--response-filter ((platform llm-api--ollama) on-data _process output)
   ;; (message "llm-api--response-filter: '%s'" output)
-  (let ((lines (split-string output "?\n")))
+  (let ((lines (split-string output "
+?\n")))
     (dolist (line lines)
       (when (not (string-empty-p line))
         (let ((chunk (json-parse-string line :object-type 'plist :array-type 'list)))
