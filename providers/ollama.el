@@ -35,21 +35,21 @@
          (models-data (alist-get 'models response))
          ;; Filter out models with "M" in parameter_size
          (filtered-models (cl-remove-if
-                         (lambda (m)
-                           (let* ((details (alist-get 'details m))
-                                  (param-size (alist-get 'parameter_size details)))
-                             (string-match-p "M" param-size)))
-                         models-data))
+                           (lambda (m)
+                             (let* ((details (alist-get 'details m))
+                                    (param-size (alist-get 'parameter_size details)))
+                               (string-match-p "M" param-size)))
+                           models-data))
          (models (mapcar (lambda (m) (let ((details (alist-get 'details m))
-                                          (name (alist-get 'name m)))
-                                      `(:model ,name
-                                        :name  ,(format "%s:%s %s"
-                                                        (format "%+2sB" (extract-number (alist-get 'parameter_size details)))
-                                                        (format "%s" (downcase (get-until
-                                                                                (alist-get 'quantization_level details)
-                                                                                "_")))
-                                                        (get-until name ":")))))
-                        filtered-models)))
+                                           (name (alist-get 'name m)))
+                                       `(:model ,name
+                                         :name  ,(format "%s:%s %s"
+                                                         (format "%+2sB" (extract-number (alist-get 'parameter_size details)))
+                                                         (format "%s" (downcase (get-until
+                                                                                 (alist-get 'quantization_level details)
+                                                                                 "_")))
+                                                         (get-until name ":")))))
+                         filtered-models)))
     (spinner-stop)
     (setq *ollama-models* models)))
 
@@ -91,6 +91,8 @@
          (model-params (plist-get model :params))
          (model-id (if (stringp model) model (plist-get model :model)))
          (get-param (lambda (key) (or (plist-get model-params key) (plist-get params key))))
+         ;; read num_ctx from platform :ctx-size or *ollama-num-ctx*
+         (num-ctx (or (plist-get params :context-size) *ollama-num-ctx*))
          (temperature (funcall get-param :temperature)))
     ;; the actual payload
     `(:model ,model-id
@@ -98,7 +100,8 @@
       :keep_alive -1
       :options ((:temperature . ,temperature)
                 ;; to avoid modifying every Modelfile
-                ,@(when *ollama-num-ctx* `((:num_ctx . ,*ollama-num-ctx*)))
+                ;; ,@(when *ollama-num-ctx* `((:num_ctx . ,*ollama-num-ctx*)))
+                ,@(when num-ctx `((:num_ctx . ,*ollama-num-ctx*)))
                 ;; :top_k . 20
                 ;; :top_p . 0.9
                 ;; :tfs_z . 0.5
