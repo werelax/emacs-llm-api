@@ -7,7 +7,7 @@
 ;; insert citations
 (defun generate-citations-block (citations)
   (cl-loop for element in citations
-           for index from 0
+           for index from 1
            collect (format "[%d]: %s" index element) into result
            finally (return (mapconcat 'identity result "\n"))))
 
