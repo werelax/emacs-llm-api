@@ -32,6 +32,7 @@
   url
   token
   system-prompt
+  (system-prompt-role :system)
   (history '())
   (available-models '())
   selected-model
@@ -40,6 +41,7 @@
   process-buffer-name
   process-buffer
   ;; state
+  last-api-response
   last-response
   finish-reason)
 
@@ -100,7 +102,7 @@
   "Process sentinel function. ON-FINISH and CONITNUE to decide how to react.
 Optionally specify the PROCESS and PLATFORM.")
 
-(cl-defgeneric llm-api--on-generation-finish-hook (platform)
+(cl-defgeneric llm-api--on-generation-finish-hook (platform on-data)
   "Hook called after PLATFORM has finished generating a resonse.")
 
 (cl-defgeneric llm-api--add-generated-message-to-history (platform)
@@ -115,7 +117,8 @@ Optionally specify the PROCESS and PLATFORM.")
   (load (expand-file-name "./providers/default.el" base-dir))
   ;; (load (expand-file-name "./providers/openchat-team.el" base-dir))
   ;; (load (expand-file-name "./providers/ollama-completion.el" base-dir))
-  ;; (load (expand-file-name "./providers/togetherai.el" base-dir))
+  (load (expand-file-name "./providers/togetherai.el" base-dir))
+  (load (expand-file-name "./providers/openai.el" base-dir))
   ;; (load (expand-file-name "./providers/awan-llm.el" base-dir))
   (load (expand-file-name "./providers/open-router.el" base-dir))
   (load (expand-file-name "./providers/ollama.el" base-dir))

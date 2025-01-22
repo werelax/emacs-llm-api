@@ -101,7 +101,7 @@
       :options ((:temperature . ,temperature)
                 ;; to avoid modifying every Modelfile
                 ;; ,@(when *ollama-num-ctx* `((:num_ctx . ,*ollama-num-ctx*)))
-                ,@(when num-ctx `((:num_ctx . ,*ollama-num-ctx*)))
+                ,@(when num-ctx `((:num_ctx . ,num-ctx)))
                 ;; :top_k . 20
                 ;; :top_p . 0.9
                 ;; :tfs_z . 0.5
@@ -150,5 +150,5 @@
 (defun llm--create-ollama-platform (&optional selected-model)
   (llm-api--ollama-create
    :name "ollama"
-   :selected-model (or selected-model "gemma2:27b-instruct-q4_K_M")
-   :params `(:temperature 0.2)))
+   :selected-model (or selected-model "phi4")
+   :params `(:temperature 0.75)))

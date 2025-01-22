@@ -50,7 +50,8 @@
     (when-let ((system-prompt (llm-api--platform-system-prompt platform)))
       (when (not (string-empty-p system-prompt))
         ;; (message "SYSTEM PROMPT: %s" system-prompt)
-        (push `((:role . :system) (:content . ,system-prompt)) history)))
+        (let ((system-prompt-role (llm-api--platform-system-prompt-role platform)))
+          (push `((:role . ,system-prompt-role) (:content . ,system-prompt)) history))))
     ;; (message "HISTORY: %s" history)
     history))
 
@@ -71,7 +72,7 @@
     (llm-api--add-to-history platform `((:role . :assistant) (:content . ,last-response)))
     (setf (llm-api--platform-last-response platform) nil)))
 
-(cl-defmethod llm-api--on-generation-finish-hook ((_platform llm-api--platform))
+(cl-defmethod llm-api--on-generation-finish-hook ((_platform llm-api--platform) _on-data)
   "Empty for this implementation for PLATFORM."
   nil)
 
@@ -91,6 +92,8 @@
                        ;; (string= "chat.completion" (plist-get chunk :object))
                        (string-prefix-p "chat.completion" (plist-get chunk :object))
                        )
+              ;; save the last api response (for debug, reference and citations)
+              (setf (llm-api--platform-last-api-response platform) chunk)
               (let ((choices (plist-get chunk :choices)))
                 (when (and (listp choices)
                            (> (length choices) 0))
@@ -111,6 +114,7 @@
                     ;; save the finish reason
                     (when (not (eq finish-reason :null))
                       (setf (llm-api--platform-finish-reason platform) finish-reason))))))))))))
+
 
 (cl-defmethod llm-api--process-sentinel ((platform llm-api--platform) on-finish on-continue process event)
   "Process sentinel function to handle EVENT for PROCESS and PLATFORM. Call ON-FINISH on end."
@@ -166,14 +170,18 @@
   ;; call the API
   (let* ((on-data (plist-get args :on-data))
          (on-finish (plist-get args :on-finish))
-         (continue-generation (lambda()
+         (continue-generation (lambda ()
                                 (message "* continuing!")
                                 (llm-api--add-generated-message-to-history platform)
                                 (apply 'llm-api--generate-streaming platform "" args)))
          (filter (lambda (process line)
                    (llm-api--response-filter platform on-data process line)))
          (sentinel (lambda (process event)
-                     (llm-api--process-sentinel platform on-finish continue-generation process event)))
+                     (llm-api--process-sentinel platform
+                                                (lambda ()
+                                                  (llm-api--on-generation-finish-hook platform on-data)
+                                                  (funcall on-finish))
+                                                continue-generation process event)))
          (request-payload (llm-api--get-request-payload platform))
          (request-headers (llm-api--get-request-headers platform))
          (curl-params (llm-api--get-curl-params platform)))
@@ -206,7 +214,6 @@
                                                  (funcall sentinel process event)
                                                  ;; delete the temporary file
                                                  (delete-file temp-file))
-                                     ;; :sentinel sentile
                                      :connection-type 'pipe
                                      :noquery t)))
           (setf (llm-api--platform-process platform) process))))))
