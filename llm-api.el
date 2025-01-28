@@ -125,6 +125,7 @@ Optionally specify the PROCESS and PLATFORM.")
   (load (expand-file-name "./providers/pplx.el" base-dir))
   (load (expand-file-name "./providers/groq.el" base-dir))
   (load (expand-file-name "./providers/featherless.el" base-dir))
+  (load (expand-file-name "./providers/hyperbolic.el" base-dir))
   (load (expand-file-name "./providers/infermatic.el" base-dir)))
 
 (provide 'llm-api)
