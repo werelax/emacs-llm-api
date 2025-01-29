@@ -78,7 +78,7 @@
    :name "pplx"
    :url "https://api.perplexity.ai/chat/completions"
    :token token
-   :available-models '("sonar" "sonar-pro")
+   :available-models '("sonar" "sonar-pro" "sonar-reasoning")
    :selected-model "sonar-pro"
    :system-prompt "You are a helpful AI assistant.
 
