@@ -206,6 +206,7 @@
                             ,@curl-params
                             "-d" ,(concat "@" temp-file))))
         ;; (message "curl command: %s" curl-command)
+        ;; (message "temp file: %s" (json-encode request-payload))
         (let ((process (make-process :name (format "llm-api--server-%s" (llm-api--platform-name platform))
                                      :buffer (llm-api--platform-process-buffer-name platform)
                                      :command curl-command

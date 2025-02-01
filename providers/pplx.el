@@ -20,7 +20,6 @@
       (funcall on-data "\n\n")
       (funcall on-data (generate-citations-block citations)))))
 
-
 (defun llm-api--response-filter-process-line (platform chunk on-data)
   ;; (message "llm-api--response-filter-process-line: '%s'" chunk)
   (when (and (listp chunk)
@@ -53,24 +52,28 @@
 (defvar *partial-line* "")
 
 (cl-defmethod llm-api--response-filter ((platform llm-api--pplx) on-data _process output)
-  ;; (message "llm-api--response-filter: '%s'" output)
-  (let ((lines (split-string output "?\n")))
+  (message "llm-api--response-filter: '%s'" output)
+  (let ((lines (split-string output "\r?\n")))
     (dolist (line lines)
-      (when (string-prefix-p  "data: " line)
+      (when (string-prefix-p "data: " line)
         (setq *partial-line* "")
         (setq line (substring line (length "data: "))))
-      ;; (message "llm-api--response-filter DATA-LINE: '%s'" line)
       (when (and (not (string-empty-p line))
                  (not (string= line "[DONE]")))
         (condition-case err
-            (let ((chunk (json-parse-string (concat *partial-line* line) :object-type 'plist :array-type 'list)))
-              ;; (message "CHUNK: %s" chunk)
-              (llm-api--response-filter-process-line platform chunk on-data)
+            (let ((chunk (json-parse-string (concat *partial-line* line)
+                                            :object-type 'plist
+                                            :array-type 'list)))
+              ;; Check if the response contains an error.
+              (let ((err-data (plist-get chunk :error)))
+                (if err-data
+                    (if (and (listp err-data) (plist-get err-data :message))
+                        (message "Error: %s" (plist-get err-data :message))
+                      (message "Error: %s" err-data))
+                  (llm-api--response-filter-process-line platform chunk on-data)))
               (setq *partial-line* ""))
           (error
-           ;; (message "line: %s" (concat *partial-line* line))
-           ;; (message "ERR: %s" (error-message-string err))
-           ;; probably the json line wasn't complete
+           ;; Probably the JSON line wasn’t complete; save it for the next call.
            (setq *partial-line* line)))))))
 
 (defun llm--create-pplx-platform (token)
