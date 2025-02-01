@@ -14,7 +14,6 @@
 (cl-defmethod llm-api--on-generation-finish-hook ((platform llm-api--pplx) on-data)
   ;; extract citattions
   (let* ((response (llm-api--platform-last-api-response platform))
-         ;; last api response: (:id 3fbde125-0d71-403e-85ae-86b96f1fee8f :model sonar :created 1737506910 :usage (:prompt_tokens 113 :completion_tokens 57 :total_tokens 170) :citations (https://www.youtube.com/watch?v=eaIGRNQC1T4 https://simple.wikipedia.org/wiki/Game_Boy_Advance https://gamerant.com/kein-game-boy-advance-release-22-years-later/ https://www.nintendo.com/en-gb/Hardware/Nintendo-History/Game-Boy-Advance/Game-Boy-Advance-627139.html))
          (citations (plist-get response :citations)))
     (when citations
       (funcall on-data "\n\n")
@@ -50,6 +49,11 @@
             (setf (llm-api--platform-finish-reason platform) finish-reason)))))))
 
 (defvar *partial-line* "")
+
+(cl-defmethod llm-api--get-request-payload ((platform llm-api--pplx))
+  (let ((payload (cl-call-next-method platform)))
+    (setf (plist-get payload :max_tokens) 120000)
+    payload))
 
 (cl-defmethod llm-api--response-filter ((platform llm-api--pplx) on-data _process output)
   (message "llm-api--response-filter: '%s'" output)

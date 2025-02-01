@@ -200,13 +200,14 @@
     ;; (message "curl params: %s" (json-encode curl-params))
     (let ((temp-file (make-temp-file "llm-api-payload-")))
       (with-temp-file temp-file
-        (insert (json-encode request-payload)))
+        (insert (json-encode request-payload))
+        ;; (message "temp-file: %s" (buffer-string))
+        )
       (let ((curl-command `("curl"
                             ,(llm-api--get-curl-url platform)
                             ,@curl-params
                             "-d" ,(concat "@" temp-file))))
         ;; (message "curl command: %s" curl-command)
-        ;; (message "temp file: %s" (json-encode request-payload))
         (let ((process (make-process :name (format "llm-api--server-%s" (llm-api--platform-name platform))
                                      :buffer (llm-api--platform-process-buffer-name platform)
                                      :command curl-command
