@@ -231,7 +231,7 @@ may override this if they require special continuation message formatting."
       ;; push adds at the *front*!
       (push "-H" curl-params))
     ;; full command
-    (message "curl params: %s" (json-encode request-payload))
+    ;; (message "curl params: %s" (json-encode request-payload))
     ;; (message "curl params: %s" (json-encode curl-params))
     (let ((temp-file (make-temp-file "llm-api-payload-")))
       (with-temp-file temp-file
