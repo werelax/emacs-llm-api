@@ -16,6 +16,7 @@
   (let* ((response (llm-api--platform-last-api-response platform))
          (citations (plist-get response :citations)))
     (when citations
+      (setf (plist-get response :citations) nil)
       (funcall on-data "\n\n")
       (funcall on-data (generate-citations-block citations)))))
 
@@ -56,7 +57,6 @@
     payload))
 
 (cl-defmethod llm-api--response-filter ((platform llm-api--pplx) on-data _process output)
-  (message "llm-api--response-filter: '%s'" output)
   (let ((lines (split-string output "\r?\n")))
     (dolist (line lines)
       (when (string-prefix-p "data: " line)
@@ -85,7 +85,7 @@
    :name "pplx"
    :url "https://api.perplexity.ai/chat/completions"
    :token token
-   :available-models '("sonar" "sonar-pro" "sonar-reasoning")
+   :available-models '("sonar" "sonar-pro" "sonar-reasoning" "sonar-reasoning-pro" "r1-1776" "sonar-deep-research")
    :selected-model "sonar-pro"
    :system-prompt "You are a helpful AI assistant.
 
