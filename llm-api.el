@@ -105,8 +105,14 @@ Optionally specify the PROCESS and PLATFORM.")
 (cl-defgeneric llm-api--on-generation-finish-hook (platform on-data)
   "Hook called after PLATFORM has finished generating a resonse.")
 
-(cl-defgeneric llm-api--add-generated-message-to-history (platform)
+(cl-defgeneric llm-api--add-response-to-history (platform)
   "Add generated :assistant response to PLATFORM chat history.")
+
+(cl-defgeneric llm-api--format-continuation-message (platform last-response)
+  "Format LAST-RESPONSE as a continuation message for chat history.
+Default implementation returns a simple assistant message format with
+LAST-RESPONSE. PLATFORM may override this if they require special
+continuation message formatting.")
 
 (cl-defgeneric llm-api--generate-streaming (platform prompt &rest args)
   "Query PLATFORM for PROMPT. ARGS for extra control.")
@@ -119,6 +125,7 @@ Optionally specify the PROCESS and PLATFORM.")
   ;; (load (expand-file-name "./providers/ollama-completion.el" base-dir))
   (load (expand-file-name "./providers/togetherai.el" base-dir))
   (load (expand-file-name "./providers/openai.el" base-dir))
+  (load (expand-file-name "./providers/deepseek.el" base-dir))
   ;; (load (expand-file-name "./providers/awan-llm.el" base-dir))
   (load (expand-file-name "./providers/open-router.el" base-dir))
   (load (expand-file-name "./providers/ollama.el" base-dir))

@@ -58,6 +58,7 @@
 (cl-defmethod llm-api--add-to-history ((platform llm-api--platform) message)
   "Add MESSAGE to the history for PLATFORM."
   (let ((history (llm-api--platform-history platform)))
+    ;; TODO: for each item in history: clear any previous formatting (like continuation)
     (setf (llm-api--platform-history platform) (nconc history (list message)))))
 
 (cl-defmethod llm-api--remove-last-from-history ((platform llm-api--platform))
@@ -66,11 +67,25 @@
     (when history  ; Ensure the history is not empty.
       (setf (llm-api--platform-history platform) (butlast history)))))
 
-(cl-defmethod llm-api--add-generated-message-to-history ((platform llm-api--platform))
-  "Add generated :assistant response to PLATFORM chat history."
-  (let ((last-response (llm-api--platform-last-response platform)))
-    (llm-api--add-to-history platform `((:role . :assistant) (:content . ,last-response)))
-    (setf (llm-api--platform-last-response platform) nil)))
+(cl-defmethod llm-api--add-response-to-history ((platform llm-api--platform) &rest args)
+  "Add the last response to PLATFORM's chat history.
+Handles both regular responses and continuation messages when ARGS
+contains :continuation."
+  (let* ((is-continuation (memq :continuation args))
+         (last-response (llm-api--platform-last-response platform)))
+    ;; don't add empty responses
+    (when (not (empty-string-p last-response))
+      (if is-continuation
+          ;; sometimes continuation messages require extra params
+          (llm-api--add-to-history platform (llm-api--format-continuation-message platform last-response))
+        (llm-api--add-to-history platform `((:role . :assistant) (:content . ,last-response))))
+      (setf (llm-api--platform-last-response platform) nil))))
+
+(cl-defmethod llm-api--format-continuation-message ((_ llm-api--platform) last-response)
+  "Format LAST-RESPONSE as a continuation message for chat history.
+Default implementation returns a simple assistant message format. Platforms
+may override this if they require special continuation message formatting."
+  `((:role . :assistant) (:content . ,last-response)))
 
 (cl-defmethod llm-api--on-generation-finish-hook ((_platform llm-api--platform) _on-data)
   "Empty for this implementation for PLATFORM."
@@ -132,21 +147,24 @@
   '("Content-Type: application/json"
     "Accept: application/json"))
 
+;; (cl-defmethod llm-api--get-request-payload ((platform llm-api--platform))
+;;   "Generate request payload for PLATFORM."
+;;   (let* ((params (llm-api--platform-params platform))
+;;          (max-tokens (plist-get params :max_tokens))
+;;          (temperature (plist-get params :temperature)))
+;;     `(:model ,(llm-api--get-selected-model platform)
+;;       :messages ,(llm-api--get-history platform)
+;;       ,@(when max-tokens `((:max_tokens . ,max-tokens)))
+;;       ,@(when temperature `((:temperature . ,temperature)))
+;;       :stream t)))
+
+
 (cl-defmethod llm-api--get-request-payload ((platform llm-api--platform))
-  "Generate request payload for PLATFORM."
-  (let ((params (llm-api--platform-params platform)))
-    `(:model ,(llm-api--get-selected-model platform)
-      :temperature ,(or (plist-get params :temperature) 0.2)
-      :messages ,(llm-api--get-history platform)
-      ;; :max_tokens ,(or (plist-get params :max_tokens) 4096)
-      :max_tokens 512
-      ;; :n 512
-      ;; :transforms ["middle-out"]
-      ;; :top_p 1
-      ;; :frequency_penalty 0.0
-      ;; :presence_penalty 0.0
-      ;; :stop ["\n"]
-      :stream t)))
+  "Generate request payload for PLATFORM, automatically including all params."
+  `(:model ,(llm-api--get-selected-model platform)
+    :messages ,(llm-api--get-history platform)
+    ,@(llm-api--platform-params platform)
+    :stream t))
 
 (cl-defmethod llm-api--get-curl-params ((_platform llm-api--platform))
   "Get the curl command params for PLATFORM."
@@ -165,6 +183,23 @@
   ;;       as it is instead. It would make history manipulations easier
   ;;       like *regenerate* or *generation trees* (like sillytavern).
   ;; add string to history when non-empty
+  (when (string-empty-p prompt)
+    (message "MANUAL CONTINUATION!")
+    ;; Manual continuation case
+    (let* ((history (llm-api--platform-history platform))
+           (last-msg (car (last history))))
+      (message "A")
+      (message "last-msg: %s" last-msg)
+      (when (and last-msg (eq (alist-get :role last-msg) :assistant))
+        (message "B")
+        ;; 1. Remove last message
+        (setf (llm-api--platform-history platform) (butlast history))
+        ;; 2. Reformat as continuation
+        (llm-api--add-to-history platform
+                                 (llm-api--format-continuation-message platform
+                                                                       (alist-get :content last-msg)))
+        (message "last-msg: %s" (car (last history))))))
+  ;; Normal case - add user message
   (when (not (string-empty-p prompt))
     (llm-api--add-to-history platform `((:role . :user) (:content . ,prompt))))
   ;; call the API
@@ -172,7 +207,7 @@
          (on-finish (plist-get args :on-finish))
          (continue-generation (lambda ()
                                 (message "* continuing!")
-                                (llm-api--add-generated-message-to-history platform)
+                                (llm-api--add-response-to-history platform :continuation)
                                 (apply 'llm-api--generate-streaming platform "" args)))
          (filter (lambda (process line)
                    (llm-api--response-filter platform on-data process line)))
@@ -196,7 +231,7 @@
       ;; push adds at the *front*!
       (push "-H" curl-params))
     ;; full command
-    ;; (message "curl params: %s" (json-encode request-payload))
+    (message "curl params: %s" (json-encode request-payload))
     ;; (message "curl params: %s" (json-encode curl-params))
     (let ((temp-file (make-temp-file "llm-api-payload-")))
       (with-temp-file temp-file
