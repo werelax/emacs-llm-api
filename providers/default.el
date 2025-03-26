@@ -74,7 +74,7 @@ contains :continuation."
   (let* ((is-continuation (memq :continuation args))
          (last-response (llm-api--platform-last-response platform)))
     ;; don't add empty responses
-    (when (not (empty-string-p last-response))
+    (when (not (string-empty-p last-response))
       (if is-continuation
           ;; sometimes continuation messages require extra params
           (llm-api--add-to-history platform (llm-api--format-continuation-message platform last-response))
