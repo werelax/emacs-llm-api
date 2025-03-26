@@ -184,21 +184,16 @@ may override this if they require special continuation message formatting."
   ;;       like *regenerate* or *generation trees* (like sillytavern).
   ;; add string to history when non-empty
   (when (string-empty-p prompt)
-    (message "MANUAL CONTINUATION!")
     ;; Manual continuation case
     (let* ((history (llm-api--platform-history platform))
            (last-msg (car (last history))))
-      (message "A")
-      (message "last-msg: %s" last-msg)
       (when (and last-msg (eq (alist-get :role last-msg) :assistant))
-        (message "B")
         ;; 1. Remove last message
         (setf (llm-api--platform-history platform) (butlast history))
         ;; 2. Reformat as continuation
         (llm-api--add-to-history platform
                                  (llm-api--format-continuation-message platform
-                                                                       (alist-get :content last-msg)))
-        (message "last-msg: %s" (car (last history))))))
+                                                                       (alist-get :content last-msg))))))
   ;; Normal case - add user message
   (when (not (string-empty-p prompt))
     (llm-api--add-to-history platform `((:role . :user) (:content . ,prompt))))
