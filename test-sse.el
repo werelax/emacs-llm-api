@@ -251,6 +251,7 @@ Returns plist (:response STRING :error STRING :finish-reason STRING :timed-out B
           (progn
             (llm-api--process-sentinel platform
                                        (lambda () (setq finished t))
+                                       nil  ;; on-error
                                        (lambda () (test-log "  BUG: should not continue!"))
                                        nil  ;; process (unused in this path)
                                        "finished\n")
@@ -321,6 +322,73 @@ Returns plist (:response STRING :error STRING :finish-reason STRING :timed-out B
         (test-assert "bad key: no crash" t)  ; if we got here, no crash
         (test-assert "bad key: no timeout" (not timed-out))
         (test-assert "bad key: error detected" (or err (string-empty-p response)))))))
+
+(defun test-on-error-callback ()
+  "Test that :on-error callback is called instead of :on-finish on API errors."
+  (test-log "\n-- Testing :on-error callback --")
+  (let ((platform (llm-api--platform-create
+                   :name "on-error-test"
+                   :url "https://api.groq.com/openai/v1/chat/completions"
+                   :token "sk-INVALID-TOKEN-12345"
+                   :selected-model "llama-3.3-70b-versatile"
+                   :params '(:temperature 0.1))))
+    (llm-api--clear-history platform)
+    (let ((error-called nil)
+          (error-msg nil)
+          (error-partial nil)
+          (finish-called nil)
+          (timed-out nil)
+          (start-time (float-time)))
+      (llm-api--generate-streaming
+       platform "hello"
+       :on-data (lambda (_text))
+       :on-finish (lambda () (setq finish-called t))
+       :on-error (lambda (msg partial)
+                   (setq error-called t
+                         error-msg msg
+                         error-partial partial)))
+      ;; Wait
+      (while (and (not error-called) (not finish-called) (not timed-out))
+        (accept-process-output nil 0.1)
+        (when (> (- (float-time) start-time) 15)
+          (setq timed-out t)))
+      (when timed-out
+        (llm-api--kill-process platform))
+      (test-log "  error-called: %s" error-called)
+      (test-log "  finish-called: %s" finish-called)
+      (test-log "  error-msg: %s" error-msg)
+      (test-log "  error-partial: \"%s\"" error-partial)
+      (test-assert "on-error: callback was called" error-called)
+      (test-assert "on-error: on-finish was NOT called" (not finish-called))
+      (test-assert "on-error: received error message" (and error-msg (stringp error-msg)))
+      (test-assert "on-error: received partial response" (stringp error-partial)))))
+
+(defun test-on-error-backward-compat ()
+  "Test that on-finish is called on error when :on-error is not provided."
+  (test-log "\n-- Testing :on-error backward compat --")
+  (let ((platform (llm-api--platform-create
+                   :name "compat-test"
+                   :url "https://api.groq.com/openai/v1/chat/completions"
+                   :token "sk-INVALID-TOKEN-12345"
+                   :selected-model "llama-3.3-70b-versatile"
+                   :params '(:temperature 0.1))))
+    (llm-api--clear-history platform)
+    (let ((finish-called nil)
+          (timed-out nil)
+          (start-time (float-time)))
+      (llm-api--generate-streaming
+       platform "hello"
+       :on-data (lambda (_text))
+       :on-finish (lambda () (setq finish-called t)))
+      ;; No :on-error provided — on-finish should be called instead
+      (while (and (not finish-called) (not timed-out))
+        (accept-process-output nil 0.1)
+        (when (> (- (float-time) start-time) 15)
+          (setq timed-out t)))
+      (when timed-out
+        (llm-api--kill-process platform))
+      (test-assert "backward-compat: on-finish called on error" finish-called)
+      (test-assert "backward-compat: no timeout" (not timed-out)))))
 
 ;; ============================================================
 ;; Load tokens and create platforms
@@ -422,6 +490,10 @@ Returns plist (:response STRING :error STRING :finish-reason STRING :timed-out B
 
   ;; Error handling test
   (test-error-handling)
+
+  ;; :on-error callback tests
+  (test-on-error-callback)
+  (test-on-error-backward-compat)
 
   ;; Summary
   (test-log "\n========================================")

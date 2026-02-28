@@ -107,9 +107,9 @@ PAYLOAD is a complete string from an SSE `data:' line (or an NDJSON line).")
   "Flush any remaining buffered stream content for PLATFORM.
 Called by the sentinel when the process ends, before error checking.")
 
-(cl-defgeneric llm-api--process-sentinel (platform on-finish continue process event)
-  "Process sentinel function. ON-FINISH and CONITNUE to decide how to react.
-Optionally specify the PROCESS and PLATFORM.")
+(cl-defgeneric llm-api--process-sentinel (platform on-finish on-error on-continue process event)
+  "Process sentinel for PLATFORM handling EVENT from PROCESS.
+Routes to ON-ERROR on failure, ON-CONTINUE on length limit, or ON-FINISH.")
 
 (cl-defgeneric llm-api--on-generation-finish-hook (platform on-data)
   "Hook called after PLATFORM has finished generating a resonse.")

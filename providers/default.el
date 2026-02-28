@@ -145,8 +145,11 @@ Delegates SSE framing to `llm-api--sse-parse' and JSON handling to
 
 ;; Process sentinel
 
-(cl-defmethod llm-api--process-sentinel ((platform llm-api--platform) on-finish on-continue process event)
-  "Process sentinel function to handle EVENT for PROCESS and PLATFORM. Call ON-FINISH on end."
+(cl-defmethod llm-api--process-sentinel ((platform llm-api--platform) on-finish on-error on-continue process event)
+  "Process sentinel for PLATFORM handling EVENT from PROCESS.
+Calls ON-ERROR with (error-message partial-response) when an error occurred,
+ON-CONTINUE when finish-reason is \"length\", or ON-FINISH on normal completion.
+If ON-ERROR is nil, falls back to calling ON-FINISH on error (backward compat)."
   (when (string-match-p "killed" event)
     (signal-process process 'SIGTERM))
   (when (string-match-p "finished\\|exited" event)
@@ -171,12 +174,21 @@ Delegates SSE framing to `llm-api--sse-parse' and JSON handling to
              (let ((msg (format "Unexpected response (not SSE): %.200s" raw)))
                (setf (llm-api--sse-state-errorp state) msg)
                (message "llm-api error: %s" msg))))))
-      ;; Continue generation or finish
-      (if (and state
-               (not (llm-api--sse-state-errorp state))
-               (equal (llm-api--platform-finish-reason platform) "length"))
-          (funcall on-continue)
-        (funcall on-finish)))))
+      ;; Route to error, continue, or finish
+      (cond
+       ;; Error occurred
+       ((and state (llm-api--sse-state-errorp state))
+        (let ((err-msg (llm-api--sse-state-errorp state))
+              (partial (or (llm-api--platform-last-response platform) "")))
+          (if on-error
+              (funcall on-error err-msg partial)
+            ;; Backward compat: no on-error provided, fall back to on-finish
+            (funcall on-finish))))
+       ;; Continue generation (finish_reason: "length")
+       ((and state (equal (llm-api--platform-finish-reason platform) "length"))
+        (funcall on-continue))
+       ;; Normal completion
+       (t (funcall on-finish))))))
 
 ;; Request construction
 
@@ -232,6 +244,7 @@ Delegates SSE framing to `llm-api--sse-parse' and JSON handling to
   ;; call the API
   (let* ((on-data (plist-get args :on-data))
          (on-finish (plist-get args :on-finish))
+         (on-error (plist-get args :on-error))
          (continue-generation (lambda ()
                                 (message "* continuing!")
                                 (llm-api--add-response-to-history platform :continuation)
@@ -243,6 +256,7 @@ Delegates SSE framing to `llm-api--sse-parse' and JSON handling to
                                                 (lambda ()
                                                   (llm-api--on-generation-finish-hook platform on-data)
                                                   (funcall on-finish))
+                                                on-error
                                                 continue-generation process event)))
          (request-payload (llm-api--get-request-payload platform))
          (request-headers (llm-api--get-request-headers platform))

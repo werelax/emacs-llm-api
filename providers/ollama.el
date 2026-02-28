@@ -113,13 +113,20 @@
   (condition-case err
       (let ((chunk (json-parse-string payload :object-type 'plist :array-type 'list)))
         (when (listp chunk)
-          (let* ((message (plist-get chunk :message))
-                 (content-delta (plist-get message :content))
-                 (done (plist-get chunk :done)))
-            (when (stringp content-delta)
-              (cl-callf concat (llm-api--platform-last-response platform) content-delta))
-            (when (and (stringp content-delta) (functionp on-data))
-              (funcall on-data content-delta)))))
+          ;; Check for Ollama error response (e.g. model not found)
+          (let ((err-data (plist-get chunk :error)))
+            (if (stringp err-data)
+                (progn
+                  (setf (llm-api--sse-state-errorp (llm-api--platform-sse-state platform)) err-data)
+                  (message "llm-api (ollama) error: %s" err-data))
+              ;; Normal chunk processing
+              (let* ((message (plist-get chunk :message))
+                     (content-delta (plist-get message :content))
+                     (done (plist-get chunk :done)))
+                (when (stringp content-delta)
+                  (cl-callf concat (llm-api--platform-last-response platform) content-delta))
+                (when (and (stringp content-delta) (functionp on-data))
+                  (funcall on-data content-delta)))))))
     (json-parse-error
      (message "llm-api (ollama): JSON parse error: %S" err))))
 
