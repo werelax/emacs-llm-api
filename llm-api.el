@@ -43,7 +43,8 @@
   ;; state
   last-api-response
   last-response
-  finish-reason)
+  finish-reason
+  sse-state)
 
 (cl-defmethod initialize-instance :after ((platform llm-api--platform) &rest _)
   "Initialize PLATFORM."
@@ -98,6 +99,14 @@
 (cl-defgeneric llm-api--response-filter (platform process output)
   "Process OUTPUT of PROCESS for given PLATFORM.")
 
+(cl-defgeneric llm-api--handle-sse-data (platform on-data payload)
+  "Handle a single SSE data PAYLOAD for PLATFORM, calling ON-DATA with content.
+PAYLOAD is a complete string from an SSE `data:' line (or an NDJSON line).")
+
+(cl-defgeneric llm-api--flush-stream (platform)
+  "Flush any remaining buffered stream content for PLATFORM.
+Called by the sentinel when the process ends, before error checking.")
+
 (cl-defgeneric llm-api--process-sentinel (platform on-finish continue process event)
   "Process sentinel function. ON-FINISH and CONITNUE to decide how to react.
 Optionally specify the PROCESS and PLATFORM.")
@@ -120,6 +129,7 @@ continuation message formatting.")
 ;; load provider implementations
 
 (let ((base-dir (file-name-directory (or load-file-name buffer-file-name))))
+  (load (expand-file-name "./providers/sse.el" base-dir))
   (load (expand-file-name "./providers/default.el" base-dir))
   ;; (load (expand-file-name "./providers/openchat-team.el" base-dir))
   ;; (load (expand-file-name "./providers/ollama-completion.el" base-dir))

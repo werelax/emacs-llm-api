@@ -106,3 +106,31 @@
    :system-prompt "You are a sentient superintelligent AI assistant.
  Help the user with precision."
    :params '(:temperature 0.7)))
+
+;; REASONING HELPERS
+
+(defun my/llm-openrouter-set-reasoning (effort &optional max-tokens exclude)
+  "Enable reasoning tokens for OpenRouter with EFFORT level.
+EFFORT can be 'high', 'medium', or 'low'.
+MAX-TOKENS specifies exact token allocation (alternative to effort).
+EXCLUDE when t uses reasoning internally without returning it."
+  (interactive (list (completing-read "Reasoning effort: " '("high" "medium" "low") nil t)))
+  (let ((reasoning-config (cond
+                           (max-tokens `(:max_tokens ,max-tokens))
+                           (effort `(:effort ,effort))))
+        (platform llm-chat--active-platform))
+    (when exclude
+      (plist-put reasoning-config :exclude t))
+    (plist-put (llm-api--platform-params platform) :reasoning reasoning-config)
+    (message "OpenRouter reasoning set to: %s" reasoning-config)))
+
+(defun my/llm-openrouter-disable-reasoning ()
+  "Disable reasoning tokens for OpenRouter."
+  (interactive)
+  (let ((params (llm-api--platform-params llm-chat--active-platform)))
+    (when (plist-member params :reasoning)
+      (setq params (cl-loop for (key value) on params by #'cddr
+                            unless (eq key :reasoning)
+                            collect key and collect value))
+      (setf (llm-api--platform-params llm-chat--active-platform) params)
+      (message "OpenRouter reasoning disabled"))))

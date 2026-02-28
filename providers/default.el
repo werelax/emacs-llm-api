@@ -49,10 +49,8 @@
   (let ((history (llm-api--platform-history platform)))
     (when-let ((system-prompt (llm-api--platform-system-prompt platform)))
       (when (not (string-empty-p system-prompt))
-        ;; (message "SYSTEM PROMPT: %s" system-prompt)
         (let ((system-prompt-role (llm-api--platform-system-prompt-role platform)))
           (push `((:role . ,system-prompt-role) (:content . ,system-prompt)) history))))
-    ;; (message "HISTORY: %s" history)
     history))
 
 (cl-defmethod llm-api--add-to-history ((platform llm-api--platform) message)
@@ -91,73 +89,101 @@ may override this if they require special continuation message formatting."
   "Empty for this implementation for PLATFORM."
   nil)
 
+;; SSE response handling
+
 (cl-defmethod llm-api--response-filter ((platform llm-api--platform) on-data _process output)
-  "Filter the OUTPUT of the PROCESS for PLATFORM and call ON-DATA."
-  ;; (message "llm-api--response-filter: '%s'" output)
-  (let ((lines (split-string output "?\n")))
-    (dolist (line lines)
-      (when (string-prefix-p  "data: " line)
-        (setq line (substring line (length "data: ")))
-        ;; (message "llm-api--response-filter DATA-LINE: '%s'" line)
-        (when (and (not (string-empty-p line))
-                   (not (string= line "[DONE]")))
-          (let ((chunk (json-parse-string line :object-type 'plist :array-type 'list)))
-            ;; (message "CHUNK: %s" chunk)
+  "Filter the OUTPUT of the PROCESS for PLATFORM and call ON-DATA.
+Delegates SSE framing to `llm-api--sse-parse' and JSON handling to
+`llm-api--handle-sse-data'."
+  (let ((state (llm-api--platform-sse-state platform)))
+    (llm-api--sse-parse state output
+                        (lambda (payload)
+                          (when payload
+                            (llm-api--handle-sse-data platform on-data payload))))))
+
+(cl-defmethod llm-api--flush-stream ((platform llm-api--platform))
+  "Flush remaining SSE buffer content for PLATFORM."
+  (let ((state (llm-api--platform-sse-state platform)))
+    (when state
+      (llm-api--sse-flush state))))
+
+(cl-defmethod llm-api--handle-sse-data ((platform llm-api--platform) on-data payload)
+  "Handle a single SSE data PAYLOAD for PLATFORM (OpenAI chat completions format)."
+  (condition-case err
+      (let ((chunk (json-parse-string payload :object-type 'plist :array-type 'list)))
+        ;; Check for API error response
+        (let ((err-data (plist-get chunk :error)))
+          (if err-data
+              (let ((msg (if (and (listp err-data) (plist-get err-data :message))
+                             (plist-get err-data :message)
+                           (format "%s" err-data))))
+                (setf (llm-api--sse-state-errorp (llm-api--platform-sse-state platform)) msg)
+                (message "llm-api error: %s" msg))
+            ;; Normal chunk processing
             (when (and (listp chunk)
-                       ;; (string= "chat.completion" (plist-get chunk :object))
-                       (string-prefix-p "chat.completion" (plist-get chunk :object))
-                       )
+                       (plist-get chunk :object)
+                       (string-prefix-p "chat.completion" (plist-get chunk :object)))
               ;; save the last api response (for debug, reference and citations)
               (setf (llm-api--platform-last-api-response platform) chunk)
               (let ((choices (plist-get chunk :choices)))
-                (when (and (listp choices)
-                           (> (length choices) 0))
+                (when (and (listp choices) (> (length choices) 0))
                   (let* ((choice (car choices))
-                         (msg (plist-get choice :message))
                          (delta (plist-get choice :delta))
-                         (_role (plist-get msg :role))
-                         (_content (plist-get msg :content))
                          (finish-reason (plist-get choice :finish_reason))
                          (content-delta (plist-get delta :content)))
                     ;; store last response (full response on last filter call)
                     (when (stringp content-delta)
                       (cl-callf concat (llm-api--platform-last-response platform) content-delta))
                     ;; stream the deltas
-                    (when (and (stringp content-delta)
-                               (functionp on-data))
+                    (when (and (stringp content-delta) (functionp on-data))
                       (funcall on-data content-delta))
                     ;; save the finish reason
                     (when (not (eq finish-reason :null))
-                      (setf (llm-api--platform-finish-reason platform) finish-reason))))))))))))
+                      (setf (llm-api--platform-finish-reason platform) finish-reason)))))))))
+    (json-parse-error
+     (message "llm-api: JSON parse error: %S (payload: %.100s)" err payload))))
 
+;; Process sentinel
 
 (cl-defmethod llm-api--process-sentinel ((platform llm-api--platform) on-finish on-continue process event)
   "Process sentinel function to handle EVENT for PROCESS and PLATFORM. Call ON-FINISH on end."
-  ;; (message "llm-api--server sentinel: %s" event)
   (when (string-match-p "killed" event)
     (signal-process process 'SIGTERM))
   (when (string-match-p "finished\\|exited" event)
-    ;; (message "* FINISH: %s" (llm-api--platform-finish-reason platform))
-    (if (string= (llm-api--platform-finish-reason platform) "length")
-        (funcall on-continue)
-      (funcall on-finish))))
+    ;; Flush any remaining buffered content before checking for errors
+    (llm-api--flush-stream platform)
+    (let ((state (llm-api--platform-sse-state platform)))
+      ;; Try to parse error-buffer if we never got valid SSE data
+      (when (and state
+                 (not (llm-api--sse-state-header-parsed state))
+                 (not (string-empty-p (llm-api--sse-state-error-buffer state))))
+        (let ((raw (string-trim (llm-api--sse-state-error-buffer state))))
+          (condition-case nil
+              (let* ((json (json-parse-string raw :object-type 'plist :array-type 'list))
+                     (err-data (plist-get json :error))
+                     (msg (if (and (listp err-data) (plist-get err-data :message))
+                              (plist-get err-data :message)
+                            (format "%s" (or err-data json)))))
+                (setf (llm-api--sse-state-errorp state) msg)
+                (message "llm-api error: %s" msg))
+            ;; Non-JSON error body (e.g. HTML from Cloudflare)
+            (error
+             (let ((msg (format "Unexpected response (not SSE): %.200s" raw)))
+               (setf (llm-api--sse-state-errorp state) msg)
+               (message "llm-api error: %s" msg))))))
+      ;; Continue generation or finish
+      (if (and state
+               (not (llm-api--sse-state-errorp state))
+               (equal (llm-api--platform-finish-reason platform) "length"))
+          (funcall on-continue)
+        (funcall on-finish)))))
+
+;; Request construction
 
 (cl-defmethod llm-api--get-request-headers ((_platform llm-api--platform))
   "Get the request headers for PLATFORM."
   '("Content-Type: application/json"
     "Accept: application/json"))
-
-;; (cl-defmethod llm-api--get-request-payload ((platform llm-api--platform))
-;;   "Generate request payload for PLATFORM."
-;;   (let* ((params (llm-api--platform-params platform))
-;;          (max-tokens (plist-get params :max_tokens))
-;;          (temperature (plist-get params :temperature)))
-;;     `(:model ,(llm-api--get-selected-model platform)
-;;       :messages ,(llm-api--get-history platform)
-;;       ,@(when max-tokens `((:max_tokens . ,max-tokens)))
-;;       ,@(when temperature `((:temperature . ,temperature)))
-;;       :stream t)))
-
 
 (cl-defmethod llm-api--get-request-payload ((platform llm-api--platform))
   "Generate request payload for PLATFORM, automatically including all params."
@@ -168,11 +194,13 @@ may override this if they require special continuation message formatting."
 
 (cl-defmethod llm-api--get-curl-params ((_platform llm-api--platform))
   "Get the curl command params for PLATFORM."
-  '("-s" "-N" "-X" "POST"))
+  '("-s" "-N" "-X" "POST" "--max-time" "0"))
 
 (cl-defmethod llm-api--get-curl-url ((platform llm-api--platform))
   "Get the curl command url for PLATFORM."
   (llm-api--platform-url platform))
+
+;; Streaming generation
 
 (cl-defmethod llm-api--generate-streaming ((platform llm-api--platform) (prompt string) &rest args)
   "Query PLATFORM for PROMPT. ARGS for more control."
@@ -197,6 +225,10 @@ may override this if they require special continuation message formatting."
   ;; Normal case - add user message
   (when (not (string-empty-p prompt))
     (llm-api--add-to-history platform `((:role . :user) (:content . ,prompt))))
+  ;; Initialize fresh state for this generation
+  (setf (llm-api--platform-sse-state platform) (llm-api--sse-state-create))
+  (setf (llm-api--platform-last-response platform) "")
+  (setf (llm-api--platform-finish-reason platform) nil)
   ;; call the API
   (let* ((on-data (plist-get args :on-data))
          (on-finish (plist-get args :on-finish))
@@ -226,18 +258,13 @@ may override this if they require special continuation message formatting."
       ;; push adds at the *front*!
       (push "-H" curl-params))
     ;; full command
-    ;; (message "curl params: %s" (json-encode request-payload))
-    ;; (message "curl params: %s" (json-encode curl-params))
     (let ((temp-file (make-temp-file "llm-api-payload-")))
       (with-temp-file temp-file
-        (insert (json-encode request-payload))
-        ;; (message "temp-file: %s" (buffer-string))
-        )
+        (insert (json-encode request-payload)))
       (let ((curl-command `("curl"
                             ,(llm-api--get-curl-url platform)
                             ,@curl-params
                             "-d" ,(concat "@" temp-file))))
-        ;; (message "curl command: %s" curl-command)
         (let ((process (make-process :name (format "llm-api--server-%s" (llm-api--platform-name platform))
                                      :buffer (llm-api--platform-process-buffer-name platform)
                                      :command curl-command

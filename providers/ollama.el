@@ -10,10 +10,6 @@
                (:constructor llm-api--ollama-create)
                (:copier nil)))
 
-;; for incomplete json lines
-
-(defvar partial-line "")
-
 ;; dynamic model list
 
 (defvar *ollama-models* nil "List of available models.")
@@ -71,21 +67,12 @@
     (setq *ollama-server* server-url)
     (llm-api--ollama-refresh-models)))
 
-;; history
-
-(cl-defmethod llm-api--on-clear-history ((_platform llm-api--ollama))
-  "Hook called when the history is cleared for PLATFORM."
-  (setq partial-line "")
-  (cl-call-next-method))
-
 ;; payload
 
 (cl-defmethod llm-api--get-curl-url ((platform llm-api--ollama))
   (concat *ollama-server* "/api/chat"))
 
 (cl-defmethod llm-api--get-request-payload ((platform llm-api--ollama))
-  ;; TODO:
-  ;; (message "\n> history: %s\n\n" (llm-api--get-history platform))
   (let* ((params (llm-api--platform-params platform))
          (model (llm-api--platform-selected-model platform))
          (model-params (plist-get model :params))
@@ -99,52 +86,42 @@
       :messages ,(llm-api--get-history platform)
       :keep_alive -1
       :options ((:temperature . ,temperature)
-                ;; to avoid modifying every Modelfile
-                ;; ,@(when *ollama-num-ctx* `((:num_ctx . ,*ollama-num-ctx*)))
                 ,@(when num-ctx `((:num_ctx . ,num-ctx)))
-                (:min_p . 0.2)
-                ;; :top_k . 20
-                ;; :top_p . 0.9
-                ;; :tfs_z . 0.5
-                ;; :typical_p . 0.7
-                ;; :repeat_last_n . 33
-                ;; :repeat_penalty . 1.2
-                ;; :presence_penalty . 1.5
-                ;; :frequency_penalty . 1.0
-                ;; :mirostat . 1
-                ;; :mirostat_tau . 0.8
-                ;; :mirostat_eta . 0.6
-                ;; :penalize_newline . true
-                ;; :stop . ("\n" "user:")
-                ;; :numa . :json-false
-                ;; :num_ctx . 4
-                ;; :num_batch . 2
-                ;; :logits_all . false
-                ;; :vocab_only . false
-                ;; :embedding_only . false
-                ;; :rope_frequency_base . 1.1
-                ;; :rope_frequency_scale . 0.8
-                )
+                (:min_p . 0.2))
       :stream t)))
 
-;; request filter
+;; NDJSON response handling (Ollama uses newline-delimited JSON, not SSE)
 
 (cl-defmethod llm-api--response-filter ((platform llm-api--ollama) on-data _process output)
-  ;; (message "llm-api--response-filter: '%s'" output)
-  (let ((lines (split-string output "
-?\n")))
-    (dolist (line lines)
-      (when (not (string-empty-p line))
-        (let ((chunk (json-parse-string line :object-type 'plist :array-type 'list)))
-          (when (and (listp chunk))
-            (let* ((message (plist-get chunk :message))
-                   (content-delta (plist-get message :content))
-                   (done (plist-get chunk :done)))
-              (when (stringp content-delta)
-                (cl-callf concat (llm-api--platform-last-response platform) content-delta))
-              (when (and (stringp content-delta)
-                         (functionp on-data))
-                (funcall on-data content-delta)))))))))
+  "Filter Ollama NDJSON OUTPUT using buffered parser."
+  (let ((state (llm-api--platform-sse-state platform)))
+    (llm-api--ndjson-parse state output
+                           (lambda (payload)
+                             (when payload
+                               (llm-api--handle-sse-data platform on-data payload))))))
+
+(cl-defmethod llm-api--flush-stream ((platform llm-api--ollama))
+  "Flush remaining NDJSON buffer content for Ollama."
+  (let ((state (llm-api--platform-sse-state platform)))
+    (when state
+      (llm-api--ndjson-flush state
+                             (lambda (payload)
+                               (llm-api--handle-sse-data platform nil payload))))))
+
+(cl-defmethod llm-api--handle-sse-data ((platform llm-api--ollama) on-data payload)
+  "Handle a single NDJSON line PAYLOAD for Ollama."
+  (condition-case err
+      (let ((chunk (json-parse-string payload :object-type 'plist :array-type 'list)))
+        (when (listp chunk)
+          (let* ((message (plist-get chunk :message))
+                 (content-delta (plist-get message :content))
+                 (done (plist-get chunk :done)))
+            (when (stringp content-delta)
+              (cl-callf concat (llm-api--platform-last-response platform) content-delta))
+            (when (and (stringp content-delta) (functionp on-data))
+              (funcall on-data content-delta)))))
+    (json-parse-error
+     (message "llm-api (ollama): JSON parse error: %S" err))))
 
 ;; factory
 
