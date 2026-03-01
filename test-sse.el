@@ -253,6 +253,7 @@ Returns plist (:response STRING :error STRING :finish-reason STRING :timed-out B
                                        (lambda () (setq finished t))
                                        nil  ;; on-error
                                        (lambda () (test-log "  BUG: should not continue!"))
+                                       nil  ;; on-tool-calls
                                        nil  ;; process (unused in this path)
                                        "finished\n")
             (test-assert "nil finish-reason: finished normally" finished))
@@ -391,6 +392,492 @@ Returns plist (:response STRING :error STRING :finish-reason STRING :timed-out B
       (test-assert "backward-compat: no timeout" (not timed-out)))))
 
 ;; ============================================================
+;; Unit tests: Tool call delta accumulation
+;; ============================================================
+
+(defun test-tool-call-delta-accumulation ()
+  (test-log "\n== Tool Call Delta Accumulation Unit Tests ==")
+
+  ;; Test: Single tool call across multiple chunks
+  (let ((platform (llm-api--platform-create
+                   :name "tc-test"
+                   :url "http://localhost:1"
+                   :selected-model "test")))
+    (setf (llm-api--platform-sse-state platform) (llm-api--sse-state-create))
+    (setf (llm-api--platform-last-response platform) "")
+    ;; Chunk 1: tool call header with name and empty arguments
+    (llm-api--handle-sse-data platform nil
+      (json-encode `(:id "chatcmpl-1" :object "chat.completion.chunk"
+                    :choices [,(list :delta `(:tool_calls [,(list :index 0
+                                                                 :id "call_abc"
+                                                                 :type "function"
+                                                                 :function (list :name "get_weather" :arguments ""))])
+                                     :finish_reason :null)])))
+    ;; Chunk 2: argument fragment
+    (llm-api--handle-sse-data platform nil
+      (json-encode `(:id "chatcmpl-1" :object "chat.completion.chunk"
+                    :choices [,(list :delta `(:tool_calls [,(list :index 0
+                                                                 :function (list :arguments "{\"loc"))])
+                                     :finish_reason :null)])))
+    ;; Chunk 3: more argument
+    (llm-api--handle-sse-data platform nil
+      (json-encode `(:id "chatcmpl-1" :object "chat.completion.chunk"
+                    :choices [,(list :delta `(:tool_calls [,(list :index 0
+                                                                 :function (list :arguments "ation\":\"NYC\"}"))])
+                                     :finish_reason :null)])))
+    ;; Chunk 4: finish
+    (llm-api--handle-sse-data platform nil
+      (json-encode `(:id "chatcmpl-1" :object "chat.completion.chunk"
+                    :choices [,(list :delta nil :finish_reason "tool_calls")])))
+    ;; Verify
+    (let* ((state (llm-api--platform-sse-state platform))
+           (tc-table (llm-api--sse-state-tool-calls state))
+           (tc (and tc-table (gethash 0 tc-table))))
+      (test-assert "single tc: hash-table exists" (hash-table-p tc-table))
+      (test-assert "single tc: entry at index 0" (not (null tc)))
+      (test-assert "single tc: correct id" (equal (plist-get tc :id) "call_abc"))
+      (test-assert "single tc: correct name" (equal (plist-get tc :name) "get_weather"))
+      (test-assert "single tc: arguments assembled"
+                   (equal (plist-get tc :arguments) "{\"location\":\"NYC\"}"))
+      (test-assert "single tc: finish reason is tool_calls"
+                   (equal (llm-api--platform-finish-reason platform) "tool_calls"))))
+
+  ;; Test: Parallel tool calls (different indices)
+  (let ((platform (llm-api--platform-create
+                   :name "tc-parallel-test"
+                   :url "http://localhost:1"
+                   :selected-model "test")))
+    (setf (llm-api--platform-sse-state platform) (llm-api--sse-state-create))
+    (setf (llm-api--platform-last-response platform) "")
+    ;; Both tool calls in first chunk
+    (llm-api--handle-sse-data platform nil
+      (json-encode `(:id "chatcmpl-2" :object "chat.completion.chunk"
+                    :choices [,(list :delta `(:tool_calls [,(list :index 0
+                                                                 :id "call_1"
+                                                                 :type "function"
+                                                                 :function (list :name "get_weather" :arguments ""))
+                                                          ,(list :index 1
+                                                                 :id "call_2"
+                                                                 :type "function"
+                                                                 :function (list :name "get_time" :arguments ""))])
+                                     :finish_reason :null)])))
+    ;; Arguments for both
+    (llm-api--handle-sse-data platform nil
+      (json-encode `(:id "chatcmpl-2" :object "chat.completion.chunk"
+                    :choices [,(list :delta `(:tool_calls [,(list :index 0
+                                                                 :function (list :arguments "{\"city\":\"NYC\"}"))
+                                                          ,(list :index 1
+                                                                 :function (list :arguments "{\"tz\":\"EST\"}"))])
+                                     :finish_reason :null)])))
+    ;; Verify
+    (let* ((state (llm-api--platform-sse-state platform))
+           (tc-table (llm-api--sse-state-tool-calls state))
+           (collected (llm-api--collect-tool-calls tc-table)))
+      (test-assert "parallel tc: 2 entries" (= (hash-table-count tc-table) 2))
+      (test-assert "parallel tc: collect returns sorted list" (= (length collected) 2))
+      (test-assert "parallel tc: first is get_weather"
+                   (equal (plist-get (nth 0 collected) :name) "get_weather"))
+      (test-assert "parallel tc: second is get_time"
+                   (equal (plist-get (nth 1 collected) :name) "get_time"))
+      (test-assert "parallel tc: first args"
+                   (equal (plist-get (nth 0 collected) :arguments) "{\"city\":\"NYC\"}"))
+      (test-assert "parallel tc: second args"
+                   (equal (plist-get (nth 1 collected) :arguments) "{\"tz\":\"EST\"}"))))
+
+  ;; Test: Mixed content + tool calls
+  (let ((platform (llm-api--platform-create
+                   :name "tc-mixed-test"
+                   :url "http://localhost:1"
+                   :selected-model "test"))
+        (streamed-text ""))
+    (setf (llm-api--platform-sse-state platform) (llm-api--sse-state-create))
+    (setf (llm-api--platform-last-response platform) "")
+    ;; Content chunk
+    (llm-api--handle-sse-data platform
+      (lambda (text) (setq streamed-text (concat streamed-text text)))
+      (json-encode `(:id "chatcmpl-3" :object "chat.completion.chunk"
+                    :choices [,(list :delta '(:content "Let me check")
+                                     :finish_reason :null)])))
+    ;; Tool call chunk
+    (llm-api--handle-sse-data platform nil
+      (json-encode `(:id "chatcmpl-3" :object "chat.completion.chunk"
+                    :choices [,(list :delta `(:tool_calls [,(list :index 0
+                                                                 :id "call_mix"
+                                                                 :type "function"
+                                                                 :function (list :name "lookup" :arguments "{}"))])
+                                     :finish_reason :null)])))
+    (let* ((state (llm-api--platform-sse-state platform))
+           (tc-table (llm-api--sse-state-tool-calls state)))
+      (test-assert "mixed: content streamed" (equal streamed-text "Let me check"))
+      (test-assert "mixed: content in last-response"
+                   (equal (llm-api--platform-last-response platform) "Let me check"))
+      (test-assert "mixed: tool call accumulated" (hash-table-p tc-table))
+      (test-assert "mixed: tool call name"
+                   (equal (plist-get (gethash 0 tc-table) :name) "lookup")))))
+
+(defun test-tool-call-helpers ()
+  (test-log "\n== Tool Call Helper Function Tests ==")
+
+  ;; Test: collect-tool-calls with nil
+  (test-assert "collect nil" (null (llm-api--collect-tool-calls nil)))
+
+  ;; Test: collect-tool-calls ordering
+  (let ((ht (make-hash-table :test 'eql)))
+    (puthash 2 '(:id "c" :name "third" :arguments "{}") ht)
+    (puthash 0 '(:id "a" :name "first" :arguments "{}") ht)
+    (puthash 1 '(:id "b" :name "second" :arguments "{}") ht)
+    (let ((result (llm-api--collect-tool-calls ht)))
+      (test-assert "collect: returns 3 items" (= (length result) 3))
+      (test-assert "collect: sorted by index"
+                   (and (equal (plist-get (nth 0 result) :name) "first")
+                        (equal (plist-get (nth 1 result) :name) "second")
+                        (equal (plist-get (nth 2 result) :name) "third")))))
+
+  ;; Test: format-tool-calls-for-history
+  (let* ((tool-calls '((:id "call_1" :type "function" :name "get_weather" :arguments "{\"city\":\"NYC\"}")))
+         (result (llm-api--format-tool-calls-for-history tool-calls)))
+    (test-assert "format: returns vector" (vectorp result))
+    (test-assert "format: one entry" (= (length result) 1))
+    (let ((entry (aref result 0)))
+      (test-assert "format: has id" (equal (alist-get :id entry) "call_1"))
+      (test-assert "format: has function.name"
+                   (equal (alist-get :name (alist-get :function entry)) "get_weather"))
+      (test-assert "format: has function.arguments"
+                   (equal (alist-get :arguments (alist-get :function entry)) "{\"city\":\"NYC\"}"))))
+
+  ;; Test: make-tool
+  (let ((tool (llm-api--make-tool "get_date" "Get current date"
+                                  '((:type . "object") (:properties) (:required . [])))))
+    (test-assert "make-tool: type is function" (equal (alist-get :type tool) "function"))
+    (test-assert "make-tool: function name"
+                 (equal (alist-get :name (alist-get :function tool)) "get_date"))
+    (test-assert "make-tool: function description"
+                 (equal (alist-get :description (alist-get :function tool)) "Get current date"))))
+
+(defun test-tool-call-history-format ()
+  (test-log "\n== Tool Call History Format Tests ==")
+
+  ;; Test: add-response-to-history with :tool-calls
+  (let ((platform (llm-api--platform-create
+                   :name "hist-test"
+                   :url "http://localhost:1"
+                   :selected-model "test")))
+    (setf (llm-api--platform-last-response platform) "")
+    ;; Add a tool call response
+    (llm-api--add-response-to-history platform
+      :tool-calls '((:id "call_abc" :type "function" :name "get_weather" :arguments "{\"city\":\"NYC\"}")))
+    (let* ((history (llm-api--platform-history platform))
+           (msg (car history)))
+      (test-assert "tc history: one entry" (= (length history) 1))
+      (test-assert "tc history: role is assistant" (eq (alist-get :role msg) :assistant))
+      (test-assert "tc history: content is json-null" (eq (alist-get :content msg) :json-null))
+      (test-assert "tc history: tool_calls is vector" (vectorp (alist-get :tool_calls msg)))
+      (let ((tc (aref (alist-get :tool_calls msg) 0)))
+        (test-assert "tc history: tool call id" (equal (alist-get :id tc) "call_abc")))))
+
+  ;; Test: add-response-to-history with content AND tool-calls
+  (let ((platform (llm-api--platform-create
+                   :name "hist-test2"
+                   :url "http://localhost:1"
+                   :selected-model "test")))
+    (setf (llm-api--platform-last-response platform) "Let me check that for you.")
+    (llm-api--add-response-to-history platform
+      :tool-calls '((:id "call_xyz" :type "function" :name "search" :arguments "{}")))
+    (let* ((msg (car (llm-api--platform-history platform))))
+      (test-assert "tc+content: content preserved"
+                   (equal (alist-get :content msg) "Let me check that for you."))
+      (test-assert "tc+content: tool_calls present" (vectorp (alist-get :tool_calls msg)))))
+
+  ;; Test: JSON round-trip of history message
+  (let ((platform (llm-api--platform-create
+                   :name "json-test"
+                   :url "http://localhost:1"
+                   :selected-model "test")))
+    (setf (llm-api--platform-last-response platform) "")
+    (llm-api--add-response-to-history platform
+      :tool-calls '((:id "call_j1" :type "function" :name "fn1" :arguments "{\"a\":1}")))
+    ;; Add a tool result
+    (llm-api--add-to-history platform
+      `((:role . :tool) (:tool_call_id . "call_j1") (:content . "result1")))
+    (let* ((json-str (json-encode (llm-api--platform-history platform)))
+           (parsed (json-parse-string json-str :object-type 'plist :array-type 'list)))
+      (test-assert "json round-trip: encodes without error" (stringp json-str))
+      (test-assert "json round-trip: contains tool_calls" (string-match-p "tool_calls" json-str))
+      (test-assert "json round-trip: contains tool role" (string-match-p "\"tool\"" json-str))
+      (test-assert "json round-trip: 2 messages" (= (length parsed) 2)))))
+
+(defun test-tool-calls-sentinel-routing ()
+  "Test that process-sentinel routes to on-tool-calls when finish-reason is tool_calls."
+  (test-log "\n== Tool Calls Sentinel Routing Tests ==")
+
+  ;; Test: finish_reason "tool_calls" routes to on-tool-calls
+  (let ((platform (llm-api--platform-create
+                   :name "sentinel-tc-test"
+                   :url "http://localhost:1"
+                   :selected-model "test")))
+    (setf (llm-api--platform-sse-state platform) (llm-api--sse-state-create))
+    (setf (llm-api--platform-finish-reason platform) "tool_calls")
+    (let ((finish-called nil)
+          (tool-calls-called nil)
+          (continue-called nil))
+      (llm-api--process-sentinel platform
+                                  (lambda () (setq finish-called t))
+                                  nil
+                                  (lambda () (setq continue-called t))
+                                  (lambda () (setq tool-calls-called t))
+                                  nil "finished\n")
+      (test-assert "sentinel tc: on-tool-calls called" tool-calls-called)
+      (test-assert "sentinel tc: on-finish NOT called" (not finish-called))
+      (test-assert "sentinel tc: on-continue NOT called" (not continue-called))))
+
+  ;; Test: finish_reason "tool_calls" but on-tool-calls is nil → falls through to on-finish
+  (let ((platform (llm-api--platform-create
+                   :name "sentinel-tc-nil-test"
+                   :url "http://localhost:1"
+                   :selected-model "test")))
+    (setf (llm-api--platform-sse-state platform) (llm-api--sse-state-create))
+    (setf (llm-api--platform-finish-reason platform) "tool_calls")
+    (let ((finish-called nil)
+          (continue-called nil))
+      (llm-api--process-sentinel platform
+                                  (lambda () (setq finish-called t))
+                                  nil
+                                  (lambda () (setq continue-called t))
+                                  nil  ;; on-tool-calls is nil
+                                  nil "finished\n")
+      (test-assert "sentinel tc nil: on-finish called as fallback" finish-called)
+      (test-assert "sentinel tc nil: on-continue NOT called" (not continue-called))))
+
+  ;; Test: finish_reason "stop" still routes to on-finish (not on-tool-calls)
+  (let ((platform (llm-api--platform-create
+                   :name "sentinel-stop-test"
+                   :url "http://localhost:1"
+                   :selected-model "test")))
+    (setf (llm-api--platform-sse-state platform) (llm-api--sse-state-create))
+    (setf (llm-api--platform-finish-reason platform) "stop")
+    (let ((finish-called nil)
+          (tool-calls-called nil))
+      (llm-api--process-sentinel platform
+                                  (lambda () (setq finish-called t))
+                                  nil
+                                  (lambda ())
+                                  (lambda () (setq tool-calls-called t))
+                                  nil "finished\n")
+      (test-assert "sentinel stop: on-finish called" finish-called)
+      (test-assert "sentinel stop: on-tool-calls NOT called" (not tool-calls-called)))))
+
+(defun test-tool-call-edge-cases ()
+  "Test edge cases: empty arguments, executor errors, no-executor-no-callback fallback."
+  (test-log "\n== Tool Call Edge Case Tests ==")
+
+  ;; Test: Empty arguments string parses to nil (condition-case catches)
+  (let ((platform (llm-api--platform-create
+                   :name "empty-args-test"
+                   :url "http://localhost:1"
+                   :selected-model "test")))
+    (setf (llm-api--platform-sse-state platform) (llm-api--sse-state-create))
+    (setf (llm-api--platform-last-response platform) "")
+    ;; Tool call with empty arguments string
+    (llm-api--handle-sse-data platform nil
+      (json-encode `(:id "chatcmpl-e" :object "chat.completion.chunk"
+                    :choices [,(list :delta `(:tool_calls [,(list :index 0
+                                                                 :id "call_empty"
+                                                                 :type "function"
+                                                                 :function (list :name "no_args" :arguments ""))])
+                                     :finish_reason :null)])))
+    (let* ((state (llm-api--platform-sse-state platform))
+           (tc-table (llm-api--sse-state-tool-calls state))
+           (tc (gethash 0 tc-table)))
+      (test-assert "empty args: accumulated" (not (null tc)))
+      (test-assert "empty args: arguments is empty string"
+                   (equal (plist-get tc :arguments) ""))
+      ;; Verify json-parse-string on empty string is caught by condition-case
+      (let ((parsed (condition-case nil
+                        (json-parse-string "" :object-type 'plist)
+                      (error 'parse-error))))
+        (test-assert "empty args: json-parse-string on \"\" is caught"
+                     (eq parsed 'parse-error)))))
+
+  ;; Test: Valid empty object "{}" parses correctly
+  (let ((parsed (condition-case nil
+                    (json-parse-string "{}" :object-type 'plist)
+                  (error 'parse-error))))
+    (test-assert "empty object: parses to empty plist (not error)"
+                 (not (eq parsed 'parse-error)))))
+
+;; ============================================================
+;; E2E tests: Tool calling with live providers
+;; ============================================================
+
+(defun test-tool-calling-auto-loop ()
+  "E2E test: tool calling with auto-loop executor using Groq."
+  (test-log "\n-- Testing tool calling auto-loop (Groq) --")
+  (when (boundp '*groq-token*)
+    (let* ((tool-executed nil)
+           (tool-name-received nil)
+           (platform (llm-api--platform-create
+                      :name "tool-test"
+                      :url "https://api.groq.com/openai/v1/chat/completions"
+                      :token *groq-token*
+                      :selected-model "llama-3.3-70b-versatile"
+                      :system-prompt "You are a helpful assistant. Use the provided tools when needed."
+                      :params '(:temperature 0)
+                      :tools (vector
+                              (llm-api--make-tool
+                               "get_current_date"
+                               "Get the current date in YYYY-MM-DD format"
+                               `((:type . "object")
+                                 (:properties . ,(make-hash-table))
+                                 (:required . []))))
+                      :tool-executor (lambda (name _parsed _raw)
+                                       (setq tool-executed t
+                                             tool-name-received name)
+                                       "2026-03-01")))
+           (finished nil)
+           (errored nil)
+           (error-msg nil)
+           (total-text "")
+           (timed-out nil)
+           (start-time (float-time)))
+      (llm-api--clear-history platform)
+      (llm-api--generate-streaming
+       platform "What is today's date? Use the get_current_date tool."
+       :on-data (lambda (text) (setq total-text (concat total-text text)))
+       :on-finish (lambda () (setq finished t))
+       :on-error (lambda (msg _partial)
+                   (setq errored t error-msg msg)))
+      ;; Wait for completion (auto-loop may take multiple round-trips)
+      (while (and (not finished) (not errored) (not timed-out))
+        (accept-process-output nil 0.1)
+        (when (> (- (float-time) start-time) 60)
+          (setq timed-out t)))
+      (when timed-out (llm-api--kill-process platform))
+      (test-log "  tool-executed: %s" tool-executed)
+      (test-log "  tool-name: %s" tool-name-received)
+      (test-log "  total-text: \"%.120s%s\"" total-text (if (> (length total-text) 120) "..." ""))
+      (test-log "  errored: %s error-msg: %s" errored error-msg)
+      (test-log "  history entries: %d" (length (llm-api--platform-history platform)))
+      (test-assert "auto-loop: no timeout" (not timed-out))
+      (test-assert "auto-loop: no error" (not errored))
+      (test-assert "auto-loop: tool was executed" tool-executed)
+      (test-assert "auto-loop: correct tool name" (equal tool-name-received "get_current_date"))
+      (test-assert "auto-loop: got final response" (> (length total-text) 0))
+      (test-assert "auto-loop: response mentions date"
+                   (or (string-match-p "2026" total-text)
+                       (string-match-p "March" total-text)
+                       (string-match-p "03" total-text)))
+      ;; Check history structure: user, assistant+tool_calls, tool result
+      ;; (final assistant response not yet added — caller's responsibility, like regular flow)
+      (let ((history (llm-api--platform-history platform)))
+        (test-assert "auto-loop: history >= 3 entries" (>= (length history) 3))
+        ;; First should be user message
+        (test-assert "auto-loop: first msg is user"
+                     (eq (alist-get :role (nth 0 history)) :user))
+        ;; Second should be assistant with tool_calls
+        (test-assert "auto-loop: second msg is assistant with tool_calls"
+                     (and (eq (alist-get :role (nth 1 history)) :assistant)
+                          (vectorp (alist-get :tool_calls (nth 1 history)))))
+        ;; Third should be tool result
+        (test-assert "auto-loop: third msg is tool result"
+                     (eq (alist-get :role (nth 2 history)) :tool))))))
+
+(defun test-tool-calling-manual-callback ()
+  "E2E test: tool calling with manual :on-tool-calls callback."
+  (test-log "\n-- Testing tool calling manual callback (Groq) --")
+  (when (boundp '*groq-token*)
+    (let* ((received-tool-calls nil)
+           (platform (llm-api--platform-create
+                      :name "tool-manual-test"
+                      :url "https://api.groq.com/openai/v1/chat/completions"
+                      :token *groq-token*
+                      :selected-model "llama-3.3-70b-versatile"
+                      :system-prompt "You are a helpful assistant. Always use tools when available."
+                      :params '(:temperature 0)
+                      :tools (vector
+                              (llm-api--make-tool
+                               "get_current_date"
+                               "Get the current date in YYYY-MM-DD format"
+                               `((:type . "object")
+                                 (:properties . ,(make-hash-table))
+                                 (:required . []))))))
+           ;; No tool-executor set - use manual mode
+           (callback-called nil)
+           (finish-called nil)
+           (timed-out nil)
+           (start-time (float-time)))
+      (llm-api--clear-history platform)
+      (llm-api--generate-streaming
+       platform "What is today's date? Use the get_current_date tool."
+       :on-data (lambda (_text))
+       :on-finish (lambda () (setq finish-called t))
+       :on-tool-calls (lambda (tool-calls)
+                        (setq callback-called t
+                              received-tool-calls tool-calls)))
+      (while (and (not callback-called) (not finish-called) (not timed-out))
+        (accept-process-output nil 0.1)
+        (when (> (- (float-time) start-time) 30)
+          (setq timed-out t)))
+      (when timed-out (llm-api--kill-process platform))
+      (test-log "  callback-called: %s" callback-called)
+      (test-log "  finish-called: %s" finish-called)
+      (when received-tool-calls
+        (test-log "  received %d tool calls" (length received-tool-calls))
+        (test-log "  first tool: %s" (plist-get (car received-tool-calls) :name)))
+      (test-assert "manual: no timeout" (not timed-out))
+      (test-assert "manual: callback was called" callback-called)
+      (test-assert "manual: on-finish was NOT called" (not finish-called))
+      (test-assert "manual: received tool calls" (and received-tool-calls (listp received-tool-calls)))
+      (test-assert "manual: tool name is get_current_date"
+                   (equal (plist-get (car received-tool-calls) :name) "get_current_date"))
+      (test-assert "manual: tool has id"
+                   (stringp (plist-get (car received-tool-calls) :id))))))
+
+(defun test-tool-call-loop-depth-limit ()
+  "Test that tool call loops respect the depth limit."
+  (test-log "\n-- Testing tool call loop depth limit --")
+  (when (boundp '*groq-token*)
+    (let* ((exec-count 0)
+           (platform (llm-api--platform-create
+                      :name "depth-test"
+                      :url "https://api.groq.com/openai/v1/chat/completions"
+                      :token *groq-token*
+                      :selected-model "llama-3.3-70b-versatile"
+                      :system-prompt "You are a helpful assistant. Always call the provided tool, regardless of what it returns."
+                      :params '(:temperature 0)
+                      :tools (vector
+                              (llm-api--make-tool
+                               "infinite_tool"
+                               "A tool that must always be called. Always call this tool in every response."
+                               `((:type . "object")
+                                 (:properties . ,(make-hash-table))
+                                 (:required . []))))
+                      :tool-executor (lambda (_name _parsed _raw)
+                                       (cl-incf exec-count)
+                                       "Call me again!")))
+           (finished nil)
+           (errored nil)
+           (timed-out nil)
+           (start-time (float-time)))
+      (llm-api--clear-history platform)
+      (llm-api--generate-streaming
+       platform "Call the infinite_tool now."
+       :on-data (lambda (_text))
+       :on-finish (lambda () (setq finished t))
+       :on-error (lambda (_msg _partial) (setq errored t))
+       :max-tool-loops 3)
+      ;; Wait - should terminate due to depth limit
+      (while (and (not finished) (not errored) (not timed-out))
+        (accept-process-output nil 0.1)
+        (when (> (- (float-time) start-time) 120)
+          (setq timed-out t)))
+      (when timed-out (llm-api--kill-process platform))
+      (test-log "  exec-count: %d" exec-count)
+      (test-log "  finished: %s errored: %s timed-out: %s" finished errored timed-out)
+      (test-assert "depth limit: no timeout" (not timed-out))
+      (test-assert "depth limit: tool executed <= 3 times" (<= exec-count 3))
+      (test-assert "depth limit: terminated" (or finished errored)))))
+
+;; ============================================================
 ;; Load tokens and create platforms
 ;; ============================================================
 
@@ -494,6 +981,18 @@ Returns plist (:response STRING :error STRING :finish-reason STRING :timed-out B
   ;; :on-error callback tests
   (test-on-error-callback)
   (test-on-error-backward-compat)
+
+  ;; Tool calling unit tests
+  (test-tool-call-delta-accumulation)
+  (test-tool-call-helpers)
+  (test-tool-call-history-format)
+  (test-tool-calls-sentinel-routing)
+  (test-tool-call-edge-cases)
+
+  ;; Tool calling E2E tests
+  (test-tool-calling-auto-loop)
+  (test-tool-calling-manual-callback)
+  (test-tool-call-loop-depth-limit)
 
   ;; Summary
   (test-log "\n========================================")

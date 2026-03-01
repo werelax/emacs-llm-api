@@ -47,7 +47,7 @@
 (cl-defmethod llm-api--get-history ((platform llm-api--platform))
   "Get the history for PLATFORM."
   (let ((history (llm-api--platform-history platform)))
-    (when-let ((system-prompt (llm-api--platform-system-prompt platform)))
+    (when-let* ((system-prompt (llm-api--platform-system-prompt platform)))
       (when (not (string-empty-p system-prompt))
         (let ((system-prompt-role (llm-api--platform-system-prompt-role platform)))
           (push `((:role . ,system-prompt-role) (:content . ,system-prompt)) history))))
@@ -67,17 +67,28 @@
 
 (cl-defmethod llm-api--add-response-to-history ((platform llm-api--platform) &rest args)
   "Add the last response to PLATFORM's chat history.
-Handles both regular responses and continuation messages when ARGS
-contains :continuation."
+Handles regular responses, continuation messages (ARGS contains :continuation),
+and tool call messages (ARGS contains :tool-calls LIST)."
   (let* ((is-continuation (memq :continuation args))
+         (tool-calls-arg (plist-get args :tool-calls))
          (last-response (llm-api--platform-last-response platform)))
-    ;; don't add empty responses
-    (when (not (string-empty-p last-response))
+    (cond
+     ;; Tool calls: assistant message with tool_calls array
+     (tool-calls-arg
+      (let ((content (if (and last-response (not (string-empty-p last-response)))
+                         last-response
+                       :json-null)))
+        (llm-api--add-to-history platform
+          `((:role . :assistant)
+            (:content . ,content)
+            (:tool_calls . ,(llm-api--format-tool-calls-for-history tool-calls-arg)))))
+      (setf (llm-api--platform-last-response platform) nil))
+     ;; Regular or continuation (don't add empty responses)
+     ((and last-response (not (string-empty-p last-response)))
       (if is-continuation
-          ;; sometimes continuation messages require extra params
           (llm-api--add-to-history platform (llm-api--format-continuation-message platform last-response))
         (llm-api--add-to-history platform `((:role . :assistant) (:content . ,last-response))))
-      (setf (llm-api--platform-last-response platform) nil))))
+      (setf (llm-api--platform-last-response platform) nil)))))
 
 (cl-defmethod llm-api--format-continuation-message ((_ llm-api--platform) last-response)
   "Format LAST-RESPONSE as a continuation message for chat history.
@@ -88,6 +99,34 @@ may override this if they require special continuation message formatting."
 (cl-defmethod llm-api--on-generation-finish-hook ((_platform llm-api--platform) _on-data)
   "Empty for this implementation for PLATFORM."
   nil)
+
+;; Tool calling helpers
+
+(defun llm-api--collect-tool-calls (tc-table)
+  "Convert TC-TABLE hash-table to sorted list of tool call plists.
+Returns nil if TC-TABLE is nil or empty."
+  (when tc-table
+    (let ((entries '()))
+      (maphash (lambda (idx tc) (push (cons idx tc) entries)) tc-table)
+      (setq entries (sort entries (lambda (a b) (< (car a) (car b)))))
+      (mapcar #'cdr entries))))
+
+(defun llm-api--format-tool-calls-for-history (tool-calls)
+  "Format TOOL-CALLS plist list as a vector of alists for json-encode."
+  (vconcat (mapcar (lambda (tc)
+                     `((:id . ,(plist-get tc :id))
+                       (:type . ,(plist-get tc :type))
+                       (:function . ((:name . ,(plist-get tc :name))
+                                     (:arguments . ,(plist-get tc :arguments))))))
+                   tool-calls)))
+
+(defun llm-api--make-tool (name description parameters)
+  "Create a tool definition alist for NAME with DESCRIPTION and PARAMETERS.
+PARAMETERS should be a JSON Schema alist (e.g. with :type, :properties, :required)."
+  `((:type . "function")
+    (:function . ((:name . ,name)
+                  (:description . ,description)
+                  (:parameters . ,parameters)))))
 
 ;; SSE response handling
 
@@ -137,6 +176,29 @@ Delegates SSE framing to `llm-api--sse-parse' and JSON handling to
                     ;; stream the deltas
                     (when (and (stringp content-delta) (functionp on-data))
                       (funcall on-data content-delta))
+                    ;; tool call delta accumulation
+                    (let ((tc-deltas (plist-get delta :tool_calls)))
+                      (when (consp tc-deltas)
+                        (let ((tc-table (or (llm-api--sse-state-tool-calls
+                                             (llm-api--platform-sse-state platform))
+                                            (let ((ht (make-hash-table :test 'eql)))
+                                              (setf (llm-api--sse-state-tool-calls
+                                                     (llm-api--platform-sse-state platform)) ht)
+                                              ht))))
+                          (dolist (tc-delta tc-deltas)
+                            (let* ((idx (plist-get tc-delta :index))
+                                   (existing (gethash idx tc-table))
+                                   (fn (plist-get tc-delta :function)))
+                              (unless existing
+                                (setq existing (list :id (plist-get tc-delta :id)
+                                                     :type (or (plist-get tc-delta :type) "function")
+                                                     :name (and fn (plist-get fn :name))
+                                                     :arguments ""))
+                                (puthash idx existing tc-table))
+                              (when-let* ((arg-frag (and fn (plist-get fn :arguments))))
+                                (when (stringp arg-frag)
+                                  (plist-put existing :arguments
+                                             (concat (plist-get existing :arguments) arg-frag)))))))))
                     ;; save the finish reason
                     (when (not (eq finish-reason :null))
                       (setf (llm-api--platform-finish-reason platform) finish-reason)))))))))
@@ -145,10 +207,11 @@ Delegates SSE framing to `llm-api--sse-parse' and JSON handling to
 
 ;; Process sentinel
 
-(cl-defmethod llm-api--process-sentinel ((platform llm-api--platform) on-finish on-error on-continue process event)
+(cl-defmethod llm-api--process-sentinel ((platform llm-api--platform) on-finish on-error on-continue on-tool-calls process event)
   "Process sentinel for PLATFORM handling EVENT from PROCESS.
 Calls ON-ERROR with (error-message partial-response) when an error occurred,
-ON-CONTINUE when finish-reason is \"length\", or ON-FINISH on normal completion.
+ON-CONTINUE when finish-reason is \"length\", ON-TOOL-CALLS when finish-reason
+is \"tool_calls\", or ON-FINISH on normal completion.
 If ON-ERROR is nil, falls back to calling ON-FINISH on error (backward compat)."
   (when (string-match-p "killed" event)
     (signal-process process 'SIGTERM))
@@ -187,6 +250,10 @@ If ON-ERROR is nil, falls back to calling ON-FINISH on error (backward compat)."
        ;; Continue generation (finish_reason: "length")
        ((and state (equal (llm-api--platform-finish-reason platform) "length"))
         (funcall on-continue))
+       ;; Tool calls (finish_reason: "tool_calls")
+       ((and state on-tool-calls
+             (equal (llm-api--platform-finish-reason platform) "tool_calls"))
+        (funcall on-tool-calls))
        ;; Normal completion
        (t (funcall on-finish))))))
 
@@ -202,6 +269,8 @@ If ON-ERROR is nil, falls back to calling ON-FINISH on error (backward compat)."
   `(:model ,(llm-api--get-selected-model platform)
     :messages ,(llm-api--get-history platform)
     ,@(llm-api--platform-params platform)
+    ,@(when-let* ((tools (llm-api--platform-tools platform)))
+        (list :tools tools))
     :stream t))
 
 (cl-defmethod llm-api--get-curl-params ((_platform llm-api--platform))
@@ -245,10 +314,50 @@ If ON-ERROR is nil, falls back to calling ON-FINISH on error (backward compat)."
   (let* ((on-data (plist-get args :on-data))
          (on-finish (plist-get args :on-finish))
          (on-error (plist-get args :on-error))
+         (on-tool-calls (plist-get args :on-tool-calls))
+         (tool-loop-depth (or (plist-get args :tool-loop-depth) 0))
+         (max-tool-loops (or (plist-get args :max-tool-loops) 10))
          (continue-generation (lambda ()
                                 (message "* continuing!")
                                 (llm-api--add-response-to-history platform :continuation)
                                 (apply 'llm-api--generate-streaming platform "" args)))
+         (handle-tool-calls
+          (lambda ()
+            (let* ((state (llm-api--platform-sse-state platform))
+                   (tc-table (and state (llm-api--sse-state-tool-calls state)))
+                   (tool-calls (llm-api--collect-tool-calls tc-table))
+                   (executor (llm-api--platform-tool-executor platform)))
+              (if (and executor tool-calls (< tool-loop-depth max-tool-loops))
+                  ;; Auto-loop: execute tools, add results to history, re-call
+                  (progn
+                    (llm-api--add-response-to-history platform :tool-calls tool-calls)
+                    (dolist (tc tool-calls)
+                      (let* ((name (plist-get tc :name))
+                             (args-str (plist-get tc :arguments))
+                             (args-parsed (condition-case nil
+                                              (json-parse-string args-str :object-type 'plist)
+                                            (error nil)))
+                             (result (funcall executor name args-parsed args-str))
+                             (result-str (if (stringp result) result (json-encode result))))
+                        ;; Display tool activity via on-data (direct, not through SSE filter)
+                        (when (functionp on-data)
+                          (funcall on-data (format "\n\n[tool: %s(%s) → %s]\n\n"
+                                                   name
+                                                   (truncate-string-to-width args-str 60)
+                                                   (truncate-string-to-width result-str 100))))
+                        ;; Add tool result to history
+                        (llm-api--add-to-history platform
+                          `((:role . :tool)
+                            (:tool_call_id . ,(plist-get tc :id))
+                            (:content . ,result-str)))))
+                    ;; Continue generation with incremented depth
+                    (let ((next-args (append (list :tool-loop-depth (1+ tool-loop-depth)) args)))
+                      (apply 'llm-api--generate-streaming platform "" next-args)))
+                ;; Manual mode: callback or fallback to on-finish
+                (if on-tool-calls
+                    (funcall on-tool-calls tool-calls)
+                  (llm-api--on-generation-finish-hook platform on-data)
+                  (funcall on-finish))))))
          (filter (lambda (process line)
                    (llm-api--response-filter platform on-data process line)))
          (sentinel (lambda (process event)
@@ -257,7 +366,9 @@ If ON-ERROR is nil, falls back to calling ON-FINISH on error (backward compat)."
                                                   (llm-api--on-generation-finish-hook platform on-data)
                                                   (funcall on-finish))
                                                 on-error
-                                                continue-generation process event)))
+                                                continue-generation
+                                                handle-tool-calls
+                                                process event)))
          (request-payload (llm-api--get-request-payload platform))
          (request-headers (llm-api--get-request-headers platform))
          (curl-params (llm-api--get-curl-params platform)))
@@ -267,7 +378,7 @@ If ON-ERROR is nil, falls back to calling ON-FINISH on error (backward compat)."
       ;; push adds at the *front*!
       (push "-H" curl-params))
     ;; api token
-    (when-let ((token (llm-api--platform-token platform)))
+    (when-let* ((token (llm-api--platform-token platform)))
       (push (format "Authorization: Bearer %s" (llm-api--platform-token platform)) curl-params)
       ;; push adds at the *front*!
       (push "-H" curl-params))

@@ -16,7 +16,8 @@
   (error-buffer "")     ; accumulates non-SSE content for HTTP error detection
   (header-parsed nil)   ; whether we've seen at least one data: line
   (errorp nil)          ; error message string if an error was received
-  (done nil))           ; set to t when [DONE] is received
+  (done nil)            ; set to t when [DONE] is received
+  (tool-calls nil))     ; hash-table: integer index -> plist (:id :type :name :arguments)
 
 (defun llm-api--sse-parse (state output callback)
   "Parse SSE stream data from OUTPUT using STATE for buffering.

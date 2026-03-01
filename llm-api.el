@@ -40,6 +40,9 @@
   process
   process-buffer-name
   process-buffer
+  ;; tool calling
+  tools          ; vector of tool definitions (OpenAI schema), or nil
+  tool-executor  ; function (name parsed-args raw-args-string) -> result-string, or nil
   ;; state
   last-api-response
   last-response
@@ -107,9 +110,10 @@ PAYLOAD is a complete string from an SSE `data:' line (or an NDJSON line).")
   "Flush any remaining buffered stream content for PLATFORM.
 Called by the sentinel when the process ends, before error checking.")
 
-(cl-defgeneric llm-api--process-sentinel (platform on-finish on-error on-continue process event)
+(cl-defgeneric llm-api--process-sentinel (platform on-finish on-error on-continue on-tool-calls process event)
   "Process sentinel for PLATFORM handling EVENT from PROCESS.
-Routes to ON-ERROR on failure, ON-CONTINUE on length limit, or ON-FINISH.")
+Routes to ON-ERROR on failure, ON-CONTINUE on length limit,
+ON-TOOL-CALLS on tool_calls finish reason, or ON-FINISH.")
 
 (cl-defgeneric llm-api--on-generation-finish-hook (platform on-data)
   "Hook called after PLATFORM has finished generating a resonse.")
