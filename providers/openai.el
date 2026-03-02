@@ -8,26 +8,33 @@
 
 (cl-defstruct (llm-api--openai (:include llm-api--platform)
                                (:constructor llm-api--openai-create)
-                               (:copier nil)))
-
-(defvar *openai-models* nil "List of available models.")
+                               (:copier nil))
+  (models-cache nil))  ; Per-instance cache for available models
 
 (defun llm-api--openai-refresh-models (platform)
+  "Fetch available models from the provider's /models endpoint."
   (interactive)
   (spinner-start)
-  (let* ((url "https://api.openai.com/v1/models")
-         (response (plz 'get url
+  (let* ((base-url (llm-api--platform-url platform))
+         ;; Derive models URL from chat completions URL
+         ;; e.g., https://api.example.com/v1/chat/completions -> https://api.example.com/v1/models
+         (models-url (replace-regexp-in-string "/chat/completions.*" "/models" base-url))
+         (response (plz 'get models-url
                      :as #'json-read
                      :headers `(("Authorization" . ,(format "Bearer %s" (llm-api--platform-token platform))))))
          (models-data (alist-get 'data response))
          (models (mapcar (lambda (m) (alist-get 'id m)) models-data)))
     (spinner-stop)
-    (setq *openai-models* models)))
+    (setf (llm-api--openai-models-cache platform) models)
+    models))
 
 (cl-defmethod llm-api--get-available-models ((platform llm-api--openai))
-  (or *openai-models* (llm-api--openai-refresh-models platform))
-  (setf (llm-api--platform-available-models platform) *openai-models*)
-  *openai-models*)
+  "Return cached models or fetch from API if not available."
+  (or (llm-api--openai-models-cache platform)
+      (llm-api--openai-refresh-models platform))
+  (setf (llm-api--platform-available-models platform)
+        (llm-api--openai-models-cache platform))
+  (llm-api--openai-models-cache platform))
 
 ;; fix the payload a little bit
 
@@ -41,7 +48,7 @@
    :name "openai"
    :url "https://api.openai.com/v1/chat/completions"
    :token token
-   :selected-model (or selected-model (plist-get (car *openai-models*) :model))
+   :selected-model (or selected-model "gpt-5.2")
    :system-prompt "You are a sentient superintelligent AI assistant.
  Help the user with precision."
    :params '(:temperature 0.7)))

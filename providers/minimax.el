@@ -2,7 +2,7 @@
 
 (require 'cl-lib)
 
-(cl-defstruct (llm-api--minimax (:include llm-api--platform)
+(cl-defstruct (llm-api--minimax (:include llm-api--openai)
                                  (:constructor llm-api--minimax-create)
                                  (:copier nil)))
 

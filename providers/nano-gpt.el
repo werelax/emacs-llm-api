@@ -2,7 +2,7 @@
 
 (require 'cl-lib)
 
-(cl-defstruct (llm-api--nano-gpt (:include llm-api--platform)
+(cl-defstruct (llm-api--nano-gpt (:include llm-api--openai)
                                   (:constructor llm-api--nano-gpt-create)
                                   (:copier nil)))
 

@@ -2,7 +2,7 @@
 
 (require 'cl-lib)
 
-(cl-defstruct (llm-api--kimi (:include llm-api--platform)
+(cl-defstruct (llm-api--kimi (:include llm-api--openai)
                               (:constructor llm-api--kimi-create)
                               (:copier nil)))
 

@@ -2,7 +2,7 @@
 
 (require 'cl-lib)
 
-(cl-defstruct (llm-api--zai (:include llm-api--platform)
+(cl-defstruct (llm-api--zai (:include llm-api--openai)
                              (:constructor llm-api--zai-create)
                              (:copier nil)))
 
