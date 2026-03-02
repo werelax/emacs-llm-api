@@ -188,7 +188,11 @@ continuation message formatting.")
   (load (expand-file-name "./providers/groq.el" base-dir))
   (load (expand-file-name "./providers/featherless.el" base-dir))
   (load (expand-file-name "./providers/hyperbolic.el" base-dir))
-  (load (expand-file-name "./providers/infermatic.el" base-dir)))
+  (load (expand-file-name "./providers/infermatic.el" base-dir))
+  (load (expand-file-name "./providers/nano-gpt.el" base-dir))
+  (load (expand-file-name "./providers/zai.el" base-dir))
+  (load (expand-file-name "./providers/minimax.el" base-dir))
+  (load (expand-file-name "./providers/kimi.el" base-dir)))
 
 (provide 'llm-api)
 ;;; llm-api.el ends here

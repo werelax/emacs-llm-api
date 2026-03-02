@@ -1,0 +1,42 @@
+* memory stack
+** list of missing features
+*** DONE model selection (trivial)
+*** DONE kill process (trivial)
+*** DONE use correct buffer in a few places
+*** history management
+**** DONE add response ("assistant") message to history
+**** add system prompt to history
+**** DONE send/clear the history
+*** tweaks in llm-api--chat-streaming
+**** only add bearer if present
+**** build request dynamically based on present platform params (temp, etc...)
+** bugs
+*** *IMPORTANT*: do not set llm-keymap when changing!
+
+* overview
+** remove poe-specific code
+*** DONE "poe" name from code
+*** DONE process handling
+*** DONE clear history
+*** DONE request, stream and filter
+*** DONE available models
+** adapter-specific methods
+*** DONE get-available-models
+*** DONE kill-process
+*** DONE hook: on-clear-history
+*** DONE clear-history (with default implementation "opeanai")
+*** DONE get-history (with default implementation "opeanai")
+*** DONE add-to-history (with default implementation "opeanai")
+*** DONE chat-streaming (default: openai)
+*** DONE response-filter (default: openai)
+*** DONE process-sentinel (default: openai)
+*** DONE struct constructor
+** strategy
+*** DONE create (generic) data structure to hold llm state
+*** DONE flow with multimethods: default to openai
+** openai strategy
+*** DONE store history in list of plists (:role "value" :message "value" :meta nil)
+*** DONE struct: (:url "..." :system "..." :history '(...) :params '(...))
+**** params = temperature, top_k, top_p, etc...
+*** DONE chat-streaming: format data + curl request
+*** DONE clear-history: reset :history
