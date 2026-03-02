@@ -25,6 +25,44 @@
 (require 'cl-lib)
 (require 's)
 
+;; Tool registry — tools registered here are available on all platforms
+;; unless a platform overrides with its own tools/tool-executor slots.
+
+(defvar llm-api--tool-registry nil
+  "Alist of registered tools.
+Each entry is (NAME . (:definition DEF :handler FN)) where NAME is a string,
+DEF is an OpenAI-schema tool definition alist, and FN is called as
+\(FN PARSED-ARGS CALLBACK).")
+
+(defvar llm-api-default-tools nil
+  "Default tool definitions vector, rebuilt by `llm-api-register-tool'.")
+
+(defvar llm-api-default-tool-executor nil
+  "Default tool executor function, set by `llm-api-register-tool'.")
+
+(defun llm-api--tool-registry-dispatch (name parsed-args _raw-args callback)
+  "Dispatch tool NAME to its registered handler.
+PARSED-ARGS is the parsed arguments plist, CALLBACK receives the result string."
+  (let ((entry (assoc name llm-api--tool-registry #'string=)))
+    (if entry
+        (funcall (plist-get (cdr entry) :handler) parsed-args callback)
+      (funcall callback (format "[Error: no handler registered for tool: %s]" name)))))
+
+(defun llm-api-register-tool (name definition handler)
+  "Register a tool named NAME with DEFINITION and HANDLER.
+NAME is a string.  DEFINITION is an OpenAI-schema tool alist.
+HANDLER is called as (HANDLER PARSED-ARGS CALLBACK).
+Replaces any existing tool with the same NAME."
+  (setq llm-api--tool-registry
+        (cons (cons name (list :definition definition :handler handler))
+              (assoc-delete-all name llm-api--tool-registry)))
+  (setq llm-api-default-tools
+        (vconcat (mapcar (lambda (e) (plist-get (cdr e) :definition))
+                         llm-api--tool-registry)))
+  (setq llm-api-default-tool-executor
+        (when llm-api--tool-registry
+          #'llm-api--tool-registry-dispatch)))
+
 (cl-defstruct (llm-api--platform
                (:constructor llm-api--platform-create)
                (:copier nil))
@@ -40,9 +78,11 @@
   process
   process-buffer-name
   process-buffer
-  ;; tool calling
+  ;; tool calling (per-platform override; falls back to llm-api-default-tools/executor)
   tools          ; vector of tool definitions (OpenAI schema), or nil
-  tool-executor  ; function (name parsed-args raw-args-string) -> result-string, or nil
+  tool-executor  ; 3-arg sync: (name parsed-args raw-args) -> result-string
+                 ; 4-arg async: (name parsed-args raw-args callback) -> nil
+                 ; 3-arg executors are auto-wrapped to async at call time
   ;; state
   last-api-response
   last-response
@@ -130,11 +170,12 @@ continuation message formatting.")
 (cl-defgeneric llm-api--generate-streaming (platform prompt &rest args)
   "Query PLATFORM for PROMPT. ARGS for extra control.")
 
-;; load provider implementations
+;; load provider implementations and tools
 
 (let ((base-dir (file-name-directory (or load-file-name buffer-file-name))))
   (load (expand-file-name "./providers/sse.el" base-dir))
   (load (expand-file-name "./providers/default.el" base-dir))
+  (load (expand-file-name "./tools/serper.el" base-dir))
   ;; (load (expand-file-name "./providers/openchat-team.el" base-dir))
   ;; (load (expand-file-name "./providers/ollama-completion.el" base-dir))
   (load (expand-file-name "./providers/togetherai.el" base-dir))

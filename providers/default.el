@@ -128,6 +128,26 @@ PARAMETERS should be a JSON Schema alist (e.g. with :type, :properties, :require
                   (:description . ,description)
                   (:parameters . ,parameters)))))
 
+;; Async tool execution helpers
+
+(defvar llm-api--tool-timeout 30
+  "Timeout in seconds for async tool execution.")
+
+(defun llm-api--executor-is-async-p (executor)
+  "Return non-nil if EXECUTOR accepts 4+ arguments (async signature).
+Async executors take (name parsed-args raw-args callback).
+Sync executors take (name parsed-args raw-args)."
+  (let ((max-args (cdr (func-arity executor))))
+    (or (eq max-args 'many) (and (numberp max-args) (>= max-args 4)))))
+
+(defun llm-api--wrap-sync-executor (executor)
+  "Wrap sync 3-arg EXECUTOR as async 4-arg executor.
+Returns a function that calls EXECUTOR and immediately passes the
+result to CALLBACK."
+  (lambda (name parsed-args raw-args callback)
+    (let ((result (funcall executor name parsed-args raw-args)))
+      (funcall callback result))))
+
 ;; SSE response handling
 
 (cl-defmethod llm-api--response-filter ((platform llm-api--platform) on-data _process output)
@@ -169,7 +189,20 @@ Delegates SSE framing to `llm-api--sse-parse' and JSON handling to
                   (let* ((choice (car choices))
                          (delta (plist-get choice :delta))
                          (finish-reason (plist-get choice :finish_reason))
-                         (content-delta (plist-get delta :content)))
+                         (content-delta (plist-get delta :content))
+                         (reasoning-delta (plist-get delta :reasoning_content))
+                         (state (llm-api--platform-sse-state platform)))
+                    ;; reasoning_content delta (DeepSeek, QwQ, etc.)
+                    (when (stringp reasoning-delta)
+                      (setf (llm-api--sse-state-reasoning-active state) t)
+                      (when-let* ((on-reasoning (llm-api--sse-state-on-reasoning state)))
+                        (funcall on-reasoning reasoning-delta)))
+                    ;; finalize reasoning when content starts
+                    (when (and (stringp content-delta)
+                               (llm-api--sse-state-reasoning-active state))
+                      (setf (llm-api--sse-state-reasoning-active state) nil)
+                      (when-let* ((finalize-fn (llm-api--sse-state-on-reasoning-finalize state)))
+                        (funcall finalize-fn)))
                     ;; store last response (full response on last filter call)
                     (when (stringp content-delta)
                       (cl-callf concat (llm-api--platform-last-response platform) content-delta))
@@ -269,7 +302,8 @@ If ON-ERROR is nil, falls back to calling ON-FINISH on error (backward compat)."
   `(:model ,(llm-api--get-selected-model platform)
     :messages ,(llm-api--get-history platform)
     ,@(llm-api--platform-params platform)
-    ,@(when-let* ((tools (llm-api--platform-tools platform)))
+    ,@(when-let* ((tools (or (llm-api--platform-tools platform)
+                              llm-api-default-tools)))
         (list :tools tools))
     :stream t))
 
@@ -315,8 +349,18 @@ If ON-ERROR is nil, falls back to calling ON-FINISH on error (backward compat)."
          (on-finish (plist-get args :on-finish))
          (on-error (plist-get args :on-error))
          (on-tool-calls (plist-get args :on-tool-calls))
+         (on-tool-start (plist-get args :on-tool-start))
+         (on-tool-done (plist-get args :on-tool-done))
+         (on-reasoning (plist-get args :on-reasoning))
+         (on-reasoning-finalize (plist-get args :on-reasoning-finalize))
          (tool-loop-depth (or (plist-get args :tool-loop-depth) 0))
          (max-tool-loops (or (plist-get args :max-tool-loops) 10))
+         ;; Store reasoning callbacks on sse-state
+         (_ (let ((state (llm-api--platform-sse-state platform)))
+              (when on-reasoning
+                (setf (llm-api--sse-state-on-reasoning state) on-reasoning))
+              (when on-reasoning-finalize
+                (setf (llm-api--sse-state-on-reasoning-finalize state) on-reasoning-finalize))))
          (continue-generation (lambda ()
                                 (message "* continuing!")
                                 (llm-api--add-response-to-history platform :continuation)
@@ -326,33 +370,89 @@ If ON-ERROR is nil, falls back to calling ON-FINISH on error (backward compat)."
             (let* ((state (llm-api--platform-sse-state platform))
                    (tc-table (and state (llm-api--sse-state-tool-calls state)))
                    (tool-calls (llm-api--collect-tool-calls tc-table))
-                   (executor (llm-api--platform-tool-executor platform)))
+                   ;; If platform defines its own tools, respect its executor choice
+                   ;; (nil = manual mode).  Only fall back to registry defaults
+                   ;; when the platform has no per-platform tools.
+                   (executor (if (llm-api--platform-tools platform)
+                                 (llm-api--platform-tool-executor platform)
+                               llm-api-default-tool-executor)))
               (if (and executor tool-calls (< tool-loop-depth max-tool-loops))
-                  ;; Auto-loop: execute tools, add results to history, re-call
+                  ;; Auto-loop: execute tools async, barrier for completion
                   (progn
                     (llm-api--add-response-to-history platform :tool-calls tool-calls)
-                    (dolist (tc tool-calls)
-                      (let* ((name (plist-get tc :name))
-                             (args-str (plist-get tc :arguments))
-                             (args-parsed (condition-case nil
-                                              (json-parse-string args-str :object-type 'plist)
-                                            (error nil)))
-                             (result (funcall executor name args-parsed args-str))
-                             (result-str (if (stringp result) result (json-encode result))))
-                        ;; Display tool activity via on-data (direct, not through SSE filter)
-                        (when (functionp on-data)
-                          (funcall on-data (format "\n\n[tool: %s(%s) → %s]\n\n"
-                                                   name
-                                                   (truncate-string-to-width args-str 60)
-                                                   (truncate-string-to-width result-str 100))))
-                        ;; Add tool result to history
-                        (llm-api--add-to-history platform
-                          `((:role . :tool)
-                            (:tool_call_id . ,(plist-get tc :id))
-                            (:content . ,result-str)))))
-                    ;; Continue generation with incremented depth
-                    (let ((next-args (append (list :tool-loop-depth (1+ tool-loop-depth)) args)))
-                      (apply 'llm-api--generate-streaming platform "" next-args)))
+                    (let* ((async-executor (if (llm-api--executor-is-async-p executor)
+                                              executor
+                                            (llm-api--wrap-sync-executor executor)))
+                           (n (length tool-calls))
+                           (remaining (cons n nil))
+                           (results (make-vector n nil))
+                           (tc-list tool-calls)
+                           (next-args (append (list :tool-loop-depth (1+ tool-loop-depth)) args))
+                           (barrier-fn
+                            (lambda ()
+                              ;; Fallback display when no widget callbacks
+                              (when (and (null on-tool-start) (functionp on-data))
+                                (dotimes (i n)
+                                  (let* ((tc (nth i tc-list))
+                                         (tc-name (plist-get tc :name))
+                                         (tc-args (plist-get tc :arguments))
+                                         (result-str (aref results i)))
+                                    (funcall on-data (format "\n\n[tool: %s(%s) → %s]\n\n"
+                                                             tc-name
+                                                             (truncate-string-to-width tc-args 60)
+                                                             (truncate-string-to-width result-str 100))))))
+                              ;; Add all results to history
+                              (dotimes (i n)
+                                (let* ((tc (nth i tc-list))
+                                       (result-str (aref results i)))
+                                  (llm-api--add-to-history platform
+                                    `((:role . :tool)
+                                      (:tool_call_id . ,(plist-get tc :id))
+                                      (:content . ,result-str)))))
+                              ;; Continue generation
+                              (apply 'llm-api--generate-streaming platform "" next-args))))
+                      ;; Launch all tools in parallel
+                      (dotimes (idx n)
+                        (let* ((i idx) ; fresh binding for closures
+                               (tc (nth i tc-list))
+                               (name (plist-get tc :name))
+                               (args-str (plist-get tc :arguments))
+                               (args-parsed (condition-case nil
+                                                (json-parse-string args-str :object-type 'plist)
+                                              (error nil)))
+                               (timeout-timer nil)
+                               (completed (list nil)))
+                          ;; Notify tool start
+                          (when on-tool-start (funcall on-tool-start i name args-str))
+                          ;; Start timeout
+                          (setq timeout-timer
+                                (run-at-time llm-api--tool-timeout nil
+                                             (lambda ()
+                                               (unless (car completed)
+                                                 (setcar completed t)
+                                                 (let ((result-str (format "[Timeout: %s after %ds]"
+                                                                           name llm-api--tool-timeout)))
+                                                   (aset results i result-str)
+                                                   (when on-tool-done
+                                                     (funcall on-tool-done i name result-str))
+                                                   (cl-decf (car remaining))
+                                                   (when (= (car remaining) 0)
+                                                     (funcall barrier-fn)))))))
+                          ;; Execute tool
+                          (funcall async-executor name args-parsed args-str
+                                   (lambda (result)
+                                     (unless (car completed)
+                                       (setcar completed t)
+                                       (when timeout-timer (cancel-timer timeout-timer))
+                                       (let ((result-str (if (stringp result)
+                                                             result
+                                                           (json-encode result))))
+                                         (aset results i result-str)
+                                         (when on-tool-done
+                                           (funcall on-tool-done i name result-str))
+                                         (cl-decf (car remaining))
+                                         (when (= (car remaining) 0)
+                                           (funcall barrier-fn))))))))))
                 ;; Manual mode: callback or fallback to on-finish
                 (if on-tool-calls
                     (funcall on-tool-calls tool-calls)

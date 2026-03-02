@@ -17,7 +17,10 @@
   (header-parsed nil)   ; whether we've seen at least one data: line
   (errorp nil)          ; error message string if an error was received
   (done nil)            ; set to t when [DONE] is received
-  (tool-calls nil))     ; hash-table: integer index -> plist (:id :type :name :arguments)
+  (tool-calls nil)      ; hash-table: integer index -> plist (:id :type :name :arguments)
+  (on-reasoning nil)    ; callback for reasoning_content deltas
+  (on-reasoning-finalize nil) ; callback when reasoning phase ends (first content delta)
+  (reasoning-active nil)) ; t while reasoning deltas are streaming
 
 (defun llm-api--sse-parse (state output callback)
   "Parse SSE stream data from OUTPUT using STATE for buffering.

@@ -13,6 +13,12 @@
 ;; -- load llm-api --
 (require 'llm-api)
 
+;; -- load llm-chat-widgets --
+(add-to-list 'load-path
+             (expand-file-name "../llm-chat"
+                               (file-name-directory (or load-file-name buffer-file-name))))
+(require 'llm-chat-widgets)
+
 ;; -- test infrastructure --
 (defvar test-results '())
 (defvar test-count 0)
@@ -878,6 +884,250 @@ Returns plist (:response STRING :error STRING :finish-reason STRING :timed-out B
       (test-assert "depth limit: terminated" (or finished errored)))))
 
 ;; ============================================================
+;; Async executor & barrier tests
+;; ============================================================
+
+(defun test-async-executor-helpers ()
+  "Test executor-is-async-p and wrap-sync-executor."
+  (test-log "\n== Async Executor Helpers ==")
+
+  ;; 3-arg sync executor is not async
+  (let ((sync-exec (lambda (name parsed raw) (format "result-%s" name))))
+    (test-assert "3-arg executor is NOT async"
+                 (not (llm-api--executor-is-async-p sync-exec))))
+
+  ;; 4-arg async executor is async
+  (let ((async-exec (lambda (name parsed raw callback) (funcall callback "ok"))))
+    (test-assert "4-arg executor IS async"
+                 (llm-api--executor-is-async-p async-exec)))
+
+  ;; &rest executor counts as async
+  (let ((rest-exec (lambda (name &rest args) nil)))
+    (test-assert "&rest executor IS async"
+                 (llm-api--executor-is-async-p rest-exec)))
+
+  ;; wrap-sync-executor: wraps 3-arg → 4-arg, calls callback with result
+  (let* ((sync-exec (lambda (name _parsed _raw) (format "result-%s" name)))
+         (wrapped (llm-api--wrap-sync-executor sync-exec))
+         (cb-result nil))
+    (test-assert "wrapped executor IS async"
+                 (llm-api--executor-is-async-p wrapped))
+    (funcall wrapped "test-fn" nil "{}" (lambda (r) (setq cb-result r)))
+    (test-assert "wrapped executor calls callback with result"
+                 (equal cb-result "result-test-fn"))))
+
+(defun test-barrier-pattern ()
+  "Test async barrier with tools completing out of order."
+  (test-log "\n== Barrier Pattern ==")
+
+  ;; Simulate 3 tools completing in order 2, 0, 1
+  (let* ((n 3)
+         (remaining (cons n nil))
+         (results (make-vector n nil))
+         (barrier-fired nil)
+         (barrier-count 0)
+         (barrier-fn (lambda ()
+                       (setq barrier-fired t)
+                       (cl-incf barrier-count))))
+    ;; Tool 2 completes first
+    (aset results 2 "result-2")
+    (cl-decf (car remaining))
+    (when (= (car remaining) 0) (funcall barrier-fn))
+    (test-assert "barrier: not fired after 1/3" (not barrier-fired))
+
+    ;; Tool 0 completes second
+    (aset results 0 "result-0")
+    (cl-decf (car remaining))
+    (when (= (car remaining) 0) (funcall barrier-fn))
+    (test-assert "barrier: not fired after 2/3" (not barrier-fired))
+
+    ;; Tool 1 completes last
+    (aset results 1 "result-1")
+    (cl-decf (car remaining))
+    (when (= (car remaining) 0) (funcall barrier-fn))
+    (test-assert "barrier: fired after 3/3" barrier-fired)
+    (test-assert "barrier: fired exactly once" (= barrier-count 1))
+    (test-assert "barrier: results correct"
+                 (and (equal (aref results 0) "result-0")
+                      (equal (aref results 1) "result-1")
+                      (equal (aref results 2) "result-2")))))
+
+(defun test-reasoning-delta-extraction ()
+  "Test that reasoning_content deltas are extracted from SSE chunks."
+  (test-log "\n== Reasoning Delta Extraction ==")
+
+  (let* ((platform (llm-api--platform-create
+                    :name "test-reasoning"
+                    :url "http://localhost:9999"
+                    :available-models '("test-model")))
+         (state (llm-api--sse-state-create))
+         (reasoning-texts '())
+         (finalize-called nil))
+    (setf (llm-api--platform-sse-state platform) state)
+    (setf (llm-api--platform-last-response platform) "")
+    (setf (llm-api--sse-state-on-reasoning state)
+          (lambda (text) (push text reasoning-texts)))
+    (setf (llm-api--sse-state-on-reasoning-finalize state)
+          (lambda () (setq finalize-called t)))
+
+    ;; Feed reasoning chunk
+    (let ((payload (json-encode
+                    `((:id . "chatcmpl-1")
+                      (:object . "chat.completion.chunk")
+                      (:choices . [((:index . 0)
+                                    (:delta . ((:reasoning_content . "Let me think")))
+                                    (:finish_reason . :null))])))))
+      (llm-api--handle-sse-data platform (lambda (_t)) payload))
+
+    (test-assert "reasoning: callback fired"
+                 (equal reasoning-texts '("Let me think")))
+    (test-assert "reasoning: active flag set"
+                 (llm-api--sse-state-reasoning-active state))
+    (test-assert "reasoning: finalize NOT yet called"
+                 (not finalize-called))
+
+    ;; Feed content chunk (reasoning phase ends)
+    (let ((payload (json-encode
+                    `((:id . "chatcmpl-1")
+                      (:object . "chat.completion.chunk")
+                      (:choices . [((:index . 0)
+                                    (:delta . ((:content . "Hello")))
+                                    (:finish_reason . :null))])))))
+      (llm-api--handle-sse-data platform (lambda (_t)) payload))
+
+    (test-assert "reasoning: finalize called on first content"
+                 finalize-called)
+    (test-assert "reasoning: active flag cleared"
+                 (not (llm-api--sse-state-reasoning-active state)))
+    (test-assert "reasoning: content accumulated"
+                 (equal (llm-api--platform-last-response platform) "Hello"))))
+
+(defun test-sync-executor-backward-compat ()
+  "Test that existing 3-arg sync executors still work with the async barrier."
+  (test-log "\n== Sync Executor Backward Compat ==")
+
+  (when (boundp '*groq-token*)
+    (let* ((exec-log '())
+           (platform (llm--create-groq-platform *groq-token* "llama-3.3-70b-versatile"))
+           ;; 3-arg sync executor (the old signature)
+           (sync-executor (lambda (name _parsed _raw)
+                            (push name exec-log)
+                            (format "The current date is 2025-01-01")))
+           (finished nil)
+           (errored nil)
+           (timed-out nil)
+           (start-time (float-time)))
+      (setf (llm-api--platform-tools platform)
+            (vector (llm-api--make-tool
+                     "get_date" "Get the current date"
+                     `((:type . "object")
+                       (:properties . ,(make-hash-table))
+                       (:required . [])))))
+      (setf (llm-api--platform-tool-executor platform) sync-executor)
+
+      (llm-api--generate-streaming
+       platform "What is today's date? Use the get_date tool."
+       :on-data (lambda (_t))
+       :on-finish (lambda () (setq finished t))
+       :on-error (lambda (e _p) (setq errored e)))
+
+      (while (and (not finished) (not errored) (not timed-out))
+        (accept-process-output nil 0.1)
+        (when (> (- (float-time) start-time) 60)
+          (setq timed-out t)))
+      (when timed-out (llm-api--kill-process platform))
+
+      (test-assert "sync compat: no timeout" (not timed-out))
+      (test-assert "sync compat: no error" (not errored))
+      (test-assert "sync compat: executor was called" (> (length exec-log) 0))
+      (test-assert "sync compat: finished" finished))))
+
+(defun test-tool-calling-with-serper ()
+  "E2E: Groq + Serper web_search tool."
+  (test-log "\n== E2E: Tool Calling with Serper ==")
+
+  (when (boundp '*groq-token*)
+    (let* ((platform (llm--create-groq-platform *groq-token* "llama-3.3-70b-versatile"))
+           (tool-start-log '())
+           (tool-done-log '())
+           (finished nil)
+           (errored nil)
+           (timed-out nil)
+           (start-time (float-time)))
+      ;; Tools come from the global registry (llm-api-register-tool in serper.el)
+      (llm-api--generate-streaming
+       platform "Search the web for 'Emacs 30 release date'. Use the web_search tool."
+       :on-data (lambda (_t))
+       :on-finish (lambda () (setq finished t))
+       :on-error (lambda (e _p) (setq errored e))
+       :on-tool-start (lambda (idx name args-str)
+                        (push (list idx name) tool-start-log)
+                        (test-log "    tool-start[%d]: %s" idx name))
+       :on-tool-done (lambda (idx name result-str)
+                       (push (list idx name (length result-str)) tool-done-log)
+                       (test-log "    tool-done[%d]: %s (%d chars)" idx name (length result-str))))
+
+      (while (and (not finished) (not errored) (not timed-out))
+        (accept-process-output nil 0.1)
+        (when (> (- (float-time) start-time) 120)
+          (setq timed-out t)))
+      (when timed-out (llm-api--kill-process platform))
+
+      (test-assert "serper: no timeout" (not timed-out))
+      (when errored (test-log "    error: %s" errored))
+      (test-assert "serper: no error" (not errored))
+      (test-assert "serper: tool-start fired" (> (length tool-start-log) 0))
+      (test-assert "serper: tool-done fired" (> (length tool-done-log) 0))
+      (test-assert "serper: web_search was called"
+                   (cl-some (lambda (e) (equal (cadr e) "web_search")) tool-start-log))
+      (test-assert "serper: finished" finished)
+      (let ((response (llm-api--platform-last-response platform)))
+        (test-log "    final response: %.100s..." (or response ""))
+        (test-assert "serper: got final response" (and response (> (length response) 0)))))))
+
+(defun test-serper-search-direct ()
+  "Direct test of `llm-api--serper-search' (network, no LLM)."
+  (test-log "\n== Direct: Serper web_search ==")
+  (let ((result nil)
+        (timed-out nil)
+        (start-time (float-time)))
+    (llm-api--serper-search
+     "Emacs lisp"
+     (lambda (r) (setq result r)))
+    (while (and (not result) (not timed-out))
+      (accept-process-output nil 0.1)
+      (when (> (- (float-time) start-time) 30)
+        (setq timed-out t)))
+    (test-assert "search-direct: no timeout" (not timed-out))
+    (test-assert "search-direct: got result" (stringp result))
+    (test-assert "search-direct: has Title"
+                 (and result (string-match-p "Title:" result)))
+    (test-assert "search-direct: has URL"
+                 (and result (string-match-p "URL:" result)))
+    (test-log "    result: %.120s..." (or result ""))))
+
+(defun test-serper-scrape-direct ()
+  "Direct test of `llm-api--serper-scrape' (network, no LLM)."
+  (test-log "\n== Direct: Serper web_scrape ==")
+  (let ((result nil)
+        (timed-out nil)
+        (start-time (float-time)))
+    (llm-api--serper-scrape
+     "https://www.gnu.org/software/emacs/"
+     (lambda (r) (setq result r)))
+    (while (and (not result) (not timed-out))
+      (accept-process-output nil 0.1)
+      (when (> (- (float-time) start-time) 30)
+        (setq timed-out t)))
+    (test-assert "scrape-direct: no timeout" (not timed-out))
+    (test-assert "scrape-direct: got result" (stringp result))
+    (test-assert "scrape-direct: non-empty"
+                 (and result (> (length result) 100)))
+    (test-assert "scrape-direct: contains emacs content"
+                 (and result (string-match-p "[Ee]macs" result)))
+    (test-log "    result length: %d chars" (length (or result "")))))
+
+;; ============================================================
 ;; Load tokens and create platforms
 ;; ============================================================
 
@@ -896,6 +1146,330 @@ Returns plist (:response STRING :error STRING :finish-reason STRING :timed-out B
 ;; ============================================================
 ;; Main
 ;; ============================================================
+
+;; ============================================================
+;; Widget tests
+;; ============================================================
+
+(defun test-widget--fresh-buffer ()
+  "Create a fresh temp buffer for widget tests."
+  (let ((buf (generate-new-buffer " *widget-test*")))
+    (with-current-buffer buf
+      (setq-local llm-chat-widgets nil)
+      (setq-local llm-chat-widgets--counter 0))
+    buf))
+
+(defun test-widget--visible-text (buffer)
+  "Return visible text in BUFFER (excluding invisible overlay regions)."
+  (with-current-buffer buffer
+    (let ((result "")
+          (pos (point-min)))
+      (while (< pos (point-max))
+        (let ((next-change (next-single-char-property-change pos 'invisible)))
+          (unless (get-char-property pos 'invisible)
+            (setq result (concat result (buffer-substring-no-properties pos next-change))))
+          (setq pos next-change)))
+      result)))
+
+(defun test-widget-create-tool ()
+  "Test basic tool widget creation."
+  (test-log "\n== Widget: create-tool ==")
+  (let ((buf (test-widget--fresh-buffer)))
+    (unwind-protect
+        (with-current-buffer buf
+          (let ((w (llm-chat-widget-create-tool buf (point-min) "web_search"
+                                                "{\"query\":\"test\"}")))
+            ;; Widget returned
+            (test-assert "create-tool: returns widget" (not (null w)))
+            ;; Widget fields
+            (test-assert "create-tool: type is tool" (eq (plist-get w :type) 'tool))
+            (test-assert "create-tool: name" (equal (plist-get w :name) "web_search"))
+            (test-assert "create-tool: status running" (eq (plist-get w :status) :running))
+            (test-assert "create-tool: collapsed" (plist-get w :collapsed))
+            ;; Overlay exists and is invisible
+            (let ((ov (plist-get w :body-ov)))
+              (test-assert "create-tool: body-ov exists" (overlayp ov))
+              (test-assert "create-tool: body invisible" (overlay-get ov 'invisible))
+              (test-assert "create-tool: body has content"
+                           (> (overlay-end ov) (overlay-start ov))))
+            ;; Header visible, body hidden
+            (let ((visible (test-widget--visible-text buf)))
+              (test-assert "create-tool: header visible"
+                           (string-match-p "web_search: running" visible))
+              (test-assert "create-tool: body hidden"
+                           (not (string-match-p "Arguments:" visible))))
+            ;; Header has keymap text property
+            (let* ((start (plist-get w :start))
+                   (km (get-text-property (marker-position start) 'keymap)))
+              (test-assert "create-tool: header has keymap" (keymapp km)))
+            ;; Widget registered
+            (test-assert "create-tool: registered" (= (length llm-chat-widgets) 1))))
+      (kill-buffer buf))))
+
+(defun test-widget-toggle-tool ()
+  "Test toggling a tool widget expand/collapse."
+  (test-log "\n== Widget: toggle-tool ==")
+  (let ((buf (test-widget--fresh-buffer)))
+    (unwind-protect
+        (with-current-buffer buf
+          (let ((w (llm-chat-widget-create-tool buf (point-min) "web_search"
+                                                "{\"query\":\"test\"}")))
+            ;; Initially collapsed
+            (test-assert "toggle: initially collapsed" (plist-get w :collapsed))
+            (test-assert "toggle: body initially invisible"
+                         (overlay-get (plist-get w :body-ov) 'invisible))
+            ;; Expand
+            (llm-chat-widget-toggle w)
+            (test-assert "toggle: now expanded" (not (plist-get w :collapsed)))
+            (test-assert "toggle: body now visible"
+                         (not (overlay-get (plist-get w :body-ov) 'invisible)))
+            ;; Visible text should include body
+            (let ((visible (test-widget--visible-text buf)))
+              (test-assert "toggle: args visible after expand"
+                           (string-match-p "Arguments:" visible))
+              (test-assert "toggle: chevron v"
+                           (string-match-p "\\[v web_search" visible)))
+            ;; Collapse again
+            (llm-chat-widget-toggle w)
+            (test-assert "toggle: collapsed again" (plist-get w :collapsed))
+            (test-assert "toggle: body invisible again"
+                         (overlay-get (plist-get w :body-ov) 'invisible))
+            (let ((visible (test-widget--visible-text buf)))
+              (test-assert "toggle: args hidden after collapse"
+                           (not (string-match-p "Arguments:" visible)))
+              (test-assert "toggle: chevron >"
+                           (string-match-p "\\[> web_search" visible)))))
+      (kill-buffer buf))))
+
+(defun test-widget-update-tool ()
+  "Test updating a tool widget with results."
+  (test-log "\n== Widget: update-tool ==")
+  (let ((buf (test-widget--fresh-buffer)))
+    (unwind-protect
+        (with-current-buffer buf
+          (let ((w (llm-chat-widget-create-tool buf (point-min) "web_search"
+                                                "{\"query\":\"test\"}")))
+            ;; Update with success
+            (llm-chat-widget-update-tool w :success "Title: Result\nURL: http://x.com")
+            (test-assert "update: status success" (eq (plist-get w :status) :success))
+            ;; Header shows done
+            (let ((visible (test-widget--visible-text buf)))
+              (test-assert "update: header shows done"
+                           (string-match-p "web_search: done" visible)))
+            ;; Body still collapsed (should be hidden)
+            (test-assert "update: still collapsed" (plist-get w :collapsed))
+            (test-assert "update: body still invisible"
+                         (overlay-get (plist-get w :body-ov) 'invisible))
+            ;; Expand and verify result is in body
+            (llm-chat-widget-toggle w)
+            (let ((visible (test-widget--visible-text buf)))
+              (test-assert "update: result in body"
+                           (string-match-p "Title: Result" visible))
+              (test-assert "update: args in body"
+                           (string-match-p "Arguments:.*query" visible)))
+            ;; Test error status
+            (let ((w2 (llm-chat-widget-create-tool buf (point-max) "web_scrape"
+                                                   "{\"url\":\"http://x.com\"}")))
+              (llm-chat-widget-update-tool w2 :error "[Error: timeout]")
+              (let ((visible (test-widget--visible-text buf)))
+                (test-assert "update: error header"
+                             (string-match-p "web_scrape: error" visible))))))
+      (kill-buffer buf))))
+
+(defun test-widget-independent-toggle ()
+  "Test that toggling one widget does NOT affect another.
+This was a real bug: toggling widget 1 expanded widget 2's body."
+  (test-log "\n== Widget: independent-toggle ==")
+  (let ((buf (test-widget--fresh-buffer)))
+    (unwind-protect
+        (with-current-buffer buf
+          ;; Create two widgets
+          (let ((w1 (llm-chat-widget-create-tool buf (point-min) "web_search"
+                                                 "{\"query\":\"first\"}"))
+                (w2 (llm-chat-widget-create-tool buf (point-max) "web_scrape"
+                                                 "{\"url\":\"http://x.com\"}")))
+            ;; Both collapsed initially
+            (test-assert "indep: w1 collapsed" (plist-get w1 :collapsed))
+            (test-assert "indep: w2 collapsed" (plist-get w2 :collapsed))
+            (test-assert "indep: w1 body invisible"
+                         (overlay-get (plist-get w1 :body-ov) 'invisible))
+            (test-assert "indep: w2 body invisible"
+                         (overlay-get (plist-get w2 :body-ov) 'invisible))
+            ;; Expand w1 only
+            (llm-chat-widget-toggle w1)
+            (test-assert "indep: w1 now expanded" (not (plist-get w1 :collapsed)))
+            (test-assert "indep: w2 still collapsed" (plist-get w2 :collapsed))
+            (test-assert "indep: w1 body visible"
+                         (not (overlay-get (plist-get w1 :body-ov) 'invisible)))
+            (test-assert "indep: w2 body STILL invisible"
+                         (overlay-get (plist-get w2 :body-ov) 'invisible))
+            ;; Verify in visible text
+            (let ((visible (test-widget--visible-text buf)))
+              (test-assert "indep: w1 args visible"
+                           (string-match-p "query.*first" visible))
+              (test-assert "indep: w2 args NOT visible"
+                           (not (string-match-p "url.*http" visible))))
+            ;; Collapse w1, expand w2
+            (llm-chat-widget-toggle w1)
+            (llm-chat-widget-toggle w2)
+            (test-assert "indep: w1 back collapsed" (plist-get w1 :collapsed))
+            (test-assert "indep: w2 now expanded" (not (plist-get w2 :collapsed)))
+            (let ((visible (test-widget--visible-text buf)))
+              (test-assert "indep: w1 args now hidden"
+                           (not (string-match-p "query.*first" visible)))
+              (test-assert "indep: w2 args now visible"
+                           (string-match-p "url.*http" visible)))))
+      (kill-buffer buf))))
+
+(defun test-widget-update-no-overlap ()
+  "Test that updating a widget with a long result doesn't corrupt adjacent widgets.
+This was a real bug: update-tool with longer text caused marker overlap,
+scrambling the next widget's body into the current widget."
+  (test-log "\n== Widget: update-no-overlap ==")
+  (let ((buf (test-widget--fresh-buffer)))
+    (unwind-protect
+        (with-current-buffer buf
+          ;; Create two adjacent widgets
+          (let ((w1 (llm-chat-widget-create-tool buf (point-min) "web_search"
+                                                 "{\"query\":\"q\"}"))
+                (w2 (llm-chat-widget-create-tool buf (point-max) "web_scrape"
+                                                 "{\"url\":\"http://x.com\"}")))
+            ;; Update w1 with a LONG result (much longer than original body)
+            (llm-chat-widget-update-tool w1 :success
+              (mapconcat (lambda (i) (format "Title: Result %d\nSnippet: Long text here\nURL: http://example.com/%d\n" i i))
+                         (number-sequence 1 5) "\n"))
+            ;; w1 body overlay should not overlap w2 body overlay
+            (let ((w1-body-end (overlay-end (plist-get w1 :body-ov)))
+                  (w2-body-start (overlay-start (plist-get w2 :body-ov))))
+              (test-assert "no-overlap: w1 body doesn't overlap w2 body"
+                           (<= w1-body-end w2-body-start)))
+            ;; Both widgets should still toggle independently after update
+            (llm-chat-widget-toggle w1)
+            (llm-chat-widget-toggle w2)
+            (let ((visible (test-widget--visible-text buf)))
+              (test-assert "no-overlap: w1 body has Result 1"
+                           (string-match-p "Result 1" visible))
+              (test-assert "no-overlap: w2 body has pending"
+                           (string-match-p "Result: (pending)" visible)))
+            ;; Collapse both, verify hidden
+            (llm-chat-widget-toggle w1)
+            (llm-chat-widget-toggle w2)
+            (let ((visible (test-widget--visible-text buf)))
+              (test-assert "no-overlap: both collapsed hides bodies"
+                           (not (string-match-p "Result 1" visible))))
+            ;; Now update w2 as well, expand both
+            (llm-chat-widget-update-tool w2 :success "Scraped content here")
+            (llm-chat-widget-toggle w1)
+            (llm-chat-widget-toggle w2)
+            (let ((visible (test-widget--visible-text buf)))
+              (test-assert "no-overlap: w2 body updated"
+                           (string-match-p "Scraped content here" visible))
+              (test-assert "no-overlap: w1 body still intact"
+                           (string-match-p "Result 1" visible)))))
+      (kill-buffer buf))))
+
+(defun test-widget-reasoning-lifecycle ()
+  "Test reasoning widget create → append → finalize → toggle."
+  (test-log "\n== Widget: reasoning-lifecycle ==")
+  (let ((buf (test-widget--fresh-buffer)))
+    (unwind-protect
+        (with-current-buffer buf
+          ;; Create reasoning widget
+          (let ((w (llm-chat-widget-create-reasoning buf (point-min))))
+            (test-assert "reasoning: returns widget" (not (null w)))
+            (test-assert "reasoning: type" (eq (plist-get w :type) 'reasoning))
+            (test-assert "reasoning: collapsed" (plist-get w :collapsed))
+            ;; Header shows Thinking...
+            (let ((visible (test-widget--visible-text buf)))
+              (test-assert "reasoning: header shows Thinking"
+                           (string-match-p "Thinking\\.\\.\\." visible)))
+            ;; Body overlay starts as zero-length
+            (let ((ov (plist-get w :body-ov)))
+              (test-assert "reasoning: body ov exists" (overlayp ov))
+              (test-assert "reasoning: body starts empty"
+                           (= (overlay-start ov) (overlay-end ov))))
+            ;; Append text
+            (llm-chat-widget-append-reasoning w "Let me think about this. ")
+            (llm-chat-widget-append-reasoning w "First, I need to consider the options.")
+            ;; Overlay grew
+            (let ((ov (plist-get w :body-ov)))
+              (test-assert "reasoning: body grew"
+                           (> (overlay-end ov) (overlay-start ov)))
+              (test-assert "reasoning: body still invisible"
+                           (overlay-get ov 'invisible)))
+            ;; Token count updated
+            (test-assert "reasoning: token count > 0"
+                         (> (plist-get w :token-count) 0))
+            ;; Body text hidden
+            (let ((visible (test-widget--visible-text buf)))
+              (test-assert "reasoning: body text hidden"
+                           (not (string-match-p "think about" visible))))
+            ;; Finalize
+            (llm-chat-widget-finalize-reasoning w)
+            (let ((visible (test-widget--visible-text buf)))
+              (test-assert "reasoning: header shows token count"
+                           (string-match-p "Thinking ([0-9]+ tokens)" visible)))
+            ;; Toggle to expand
+            (llm-chat-widget-toggle w)
+            (test-assert "reasoning: expanded" (not (plist-get w :collapsed)))
+            (let ((visible (test-widget--visible-text buf)))
+              (test-assert "reasoning: body visible after toggle"
+                           (string-match-p "think about" visible))
+              (test-assert "reasoning: chevron v"
+                           (string-match-p "\\[v Thinking" visible)))
+            ;; Toggle to collapse
+            (llm-chat-widget-toggle w)
+            (test-assert "reasoning: collapsed again" (plist-get w :collapsed))
+            (let ((visible (test-widget--visible-text buf)))
+              (test-assert "reasoning: body hidden again"
+                           (not (string-match-p "think about" visible))))))
+      (kill-buffer buf))))
+
+(defun test-widget-font-lock-immunity ()
+  "Test that overlay-based widgets survive font-lock refontification.
+This was a real bug: markdown-mode's font-lock stripped invisible text
+properties from widget bodies because font-lock-extra-managed-props
+included 'invisible'. Overlays are immune to this."
+  (test-log "\n== Widget: font-lock-immunity ==")
+  (let ((buf (test-widget--fresh-buffer)))
+    (unwind-protect
+        (with-current-buffer buf
+          ;; Activate markdown-mode if available (it triggers font-lock)
+          (when (fboundp 'markdown-mode)
+            (markdown-mode))
+          ;; Create widget with body
+          (let ((w (llm-chat-widget-create-tool buf (point-min) "web_search"
+                                                "{\"query\":\"test\"}")))
+            ;; Verify body is invisible before font-lock
+            (test-assert "font-lock: body invisible before"
+                         (overlay-get (plist-get w :body-ov) 'invisible))
+            ;; Force font-lock refontification
+            (font-lock-ensure)
+            ;; Body should STILL be invisible (overlays immune to font-lock)
+            (test-assert "font-lock: body invisible AFTER font-lock"
+                         (overlay-get (plist-get w :body-ov) 'invisible))
+            ;; Verify body is truly hidden in visible text
+            (let ((visible (test-widget--visible-text buf)))
+              (test-assert "font-lock: body hidden in visible text"
+                           (not (string-match-p "Arguments:" visible))))
+            ;; Toggle should still work after font-lock
+            (llm-chat-widget-toggle w)
+            (test-assert "font-lock: toggle works after font-lock"
+                         (not (plist-get w :collapsed)))
+            (let ((visible (test-widget--visible-text buf)))
+              (test-assert "font-lock: body visible after toggle+font-lock"
+                           (string-match-p "Arguments:" visible)))
+            ;; Re-fontify while expanded
+            (font-lock-ensure)
+            (let ((visible (test-widget--visible-text buf)))
+              (test-assert "font-lock: body still visible after re-fontify"
+                           (string-match-p "Arguments:" visible)))
+            ;; Collapse and verify font-lock doesn't un-collapse
+            (llm-chat-widget-toggle w)
+            (font-lock-ensure)
+            (test-assert "font-lock: stays collapsed after font-lock"
+                         (overlay-get (plist-get w :body-ov) 'invisible))))
+      (kill-buffer buf))))
 
 (defun run-all-tests ()
   (test-log "========================================")
@@ -993,6 +1567,32 @@ Returns plist (:response STRING :error STRING :finish-reason STRING :timed-out B
   (test-tool-calling-auto-loop)
   (test-tool-calling-manual-callback)
   (test-tool-call-loop-depth-limit)
+
+  ;; Async executor & barrier tests
+  (test-async-executor-helpers)
+  (test-barrier-pattern)
+  (test-reasoning-delta-extraction)
+
+  ;; Sync executor backward compat (E2E, needs groq)
+  (when (boundp '*groq-token*)
+    (test-sync-executor-backward-compat))
+
+  ;; Serper direct tool tests (network, no LLM)
+  (test-serper-search-direct)
+  (test-serper-scrape-direct)
+
+  ;; Serper web tools E2E (needs groq)
+  (when (boundp '*groq-token*)
+    (test-tool-calling-with-serper))
+
+  ;; Widget tests
+  (test-widget-create-tool)
+  (test-widget-toggle-tool)
+  (test-widget-update-tool)
+  (test-widget-independent-toggle)
+  (test-widget-update-no-overlap)
+  (test-widget-reasoning-lifecycle)
+  (test-widget-font-lock-immunity)
 
   ;; Summary
   (test-log "\n========================================")
