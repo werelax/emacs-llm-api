@@ -167,8 +167,14 @@ Default implementation returns a simple assistant message format with
 LAST-RESPONSE. PLATFORM may override this if they require special
 continuation message formatting.")
 
+(cl-defgeneric llm-api--generate-streaming-from-history (platform &rest args)
+  "Generate from PLATFORM's current history without mutating history.
+ARGS for extra control callbacks/options.")
+
 (cl-defgeneric llm-api--generate-streaming (platform prompt &rest args)
-  "Query PLATFORM for PROMPT. ARGS for extra control.")
+  "Backward-compatible generation entrypoint.
+May mutate history based on PROMPT before delegating to
+`llm-api--generate-streaming-from-history'.")
 
 ;; load provider implementations and tools
 

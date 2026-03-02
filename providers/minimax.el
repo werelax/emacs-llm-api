@@ -100,8 +100,8 @@ is appended to response and streamed via ON-DATA."
     (setf (llm-api--minimax-think-open platform) in-think
           (llm-api--minimax-think-carry platform) carry)))
 
-(cl-defmethod llm-api--generate-streaming :before ((platform llm-api--minimax) (_prompt string) &rest _args)
-  "Reset MiniMax think parser state before each generation."
+(cl-defmethod llm-api--generate-streaming-from-history :before ((platform llm-api--minimax) &rest _args)
+  "Reset MiniMax think parser state before each generation request."
   (setf (llm-api--minimax-think-open platform) nil
         (llm-api--minimax-think-carry platform) ""))
 

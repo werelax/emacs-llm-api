@@ -96,6 +96,21 @@ Default implementation returns a simple assistant message format. Platforms
 may override this if they require special continuation message formatting."
   `((:role . :assistant) (:content . ,last-response)))
 
+(defun llm-api--add-user-message (platform prompt)
+  "Append user PROMPT to PLATFORM history."
+  (llm-api--add-to-history platform `((:role . :user) (:content . ,prompt))))
+
+(defun llm-api--rewrite-last-assistant-as-continuation (platform)
+  "Rewrite last assistant message in PLATFORM history as continuation format.
+Used for manual continuation flows. No-op when last message is not assistant."
+  (let* ((history (llm-api--platform-history platform))
+         (last-msg (car (last history))))
+    (when (and last-msg (eq (alist-get :role last-msg) :assistant))
+      (setf (llm-api--platform-history platform) (butlast history))
+      (llm-api--add-to-history platform
+                               (llm-api--format-continuation-message platform
+                                                                     (alist-get :content last-msg))))))
+
 (cl-defmethod llm-api--on-generation-finish-hook ((_platform llm-api--platform) _on-data)
   "Empty for this implementation for PLATFORM."
   nil)
@@ -318,28 +333,16 @@ If ON-ERROR is nil, falls back to calling ON-FINISH on error (backward compat)."
 ;; Streaming generation
 
 (cl-defmethod llm-api--generate-streaming ((platform llm-api--platform) (prompt string) &rest args)
-  "Query PLATFORM for PROMPT. ARGS for more control."
-  ;; add user message to history
-  ;; TODO: now I see that this is a mistake!
-  ;;       it would be very convenient if the function that generates the
-  ;;       response does *not* take a prompt paramter, and uses the history
-  ;;       as it is instead. It would make history manipulations easier
-  ;;       like *regenerate* or *generation trees* (like sillytavern).
-  ;; add string to history when non-empty
-  (when (string-empty-p prompt)
-    ;; Manual continuation case
-    (let* ((history (llm-api--platform-history platform))
-           (last-msg (car (last history))))
-      (when (and last-msg (eq (alist-get :role last-msg) :assistant))
-        ;; 1. Remove last message
-        (setf (llm-api--platform-history platform) (butlast history))
-        ;; 2. Reformat as continuation
-        (llm-api--add-to-history platform
-                                 (llm-api--format-continuation-message platform
-                                                                       (alist-get :content last-msg))))))
-  ;; Normal case - add user message
-  (when (not (string-empty-p prompt))
-    (llm-api--add-to-history platform `((:role . :user) (:content . ,prompt))))
+  "Backward-compatible generation entrypoint using PROMPT.
+Mutates history based on PROMPT, then delegates to
+`llm-api--generate-streaming-from-history'."
+  (if (string-empty-p prompt)
+      (llm-api--rewrite-last-assistant-as-continuation platform)
+    (llm-api--add-user-message platform prompt))
+  (apply #'llm-api--generate-streaming-from-history platform args))
+
+(cl-defmethod llm-api--generate-streaming-from-history ((platform llm-api--platform) &rest args)
+  "Generate from PLATFORM current history. ARGS for more control."
   ;; Initialize fresh state for this generation
   (setf (llm-api--platform-sse-state platform) (llm-api--sse-state-create))
   (setf (llm-api--platform-last-response platform) "")
@@ -362,9 +365,8 @@ If ON-ERROR is nil, falls back to calling ON-FINISH on error (backward compat)."
               (when on-reasoning-finalize
                 (setf (llm-api--sse-state-on-reasoning-finalize state) on-reasoning-finalize))))
          (continue-generation (lambda ()
-                                (message "* continuing!")
                                 (llm-api--add-response-to-history platform :continuation)
-                                (apply 'llm-api--generate-streaming platform "" args)))
+                                (apply #'llm-api--generate-streaming-from-history platform args)))
          (handle-tool-calls
           (lambda ()
             (let* ((state (llm-api--platform-sse-state platform))
@@ -410,7 +412,7 @@ If ON-ERROR is nil, falls back to calling ON-FINISH on error (backward compat)."
                                       (:tool_call_id . ,(plist-get tc :id))
                                       (:content . ,result-str)))))
                               ;; Continue generation
-                              (apply 'llm-api--generate-streaming platform "" next-args))))
+                              (apply #'llm-api--generate-streaming-from-history platform next-args))))
                       ;; Launch all tools in parallel
                       (dotimes (idx n)
                         (let* ((i idx) ; fresh binding for closures

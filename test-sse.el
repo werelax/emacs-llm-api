@@ -172,6 +172,73 @@ Returns plist (:response STRING :error STRING :finish-reason STRING :timed-out B
     (test-assert "NDJSON partial: complete" (equal results '("{\"key\":\"value\"}")))))
 
 ;; ============================================================
+;; Unit tests: history/generation separation refactor
+;; ============================================================
+
+(defun test-history-refactor-wrapper-mutation ()
+  "Test wrapper history mutations and delegation to from-history method."
+  (test-log "\n== History Refactor: Wrapper Mutation ==")
+  (let* ((platform (llm-api--platform-create
+                    :name "hist-wrap-test"
+                    :url "http://localhost:1"
+                    :selected-model "test-model"
+                    :history '(((:role . :assistant) (:content . "Old response")))) )
+         (delegations 0))
+    ;; Stub pure generation to avoid network and count delegations.
+    (cl-letf (((symbol-function 'llm-api--generate-streaming-from-history)
+               (lambda (&rest _args)
+                 (cl-incf delegations)
+                 nil)))
+      ;; Non-empty prompt should append user message.
+      (llm-api--generate-streaming platform "hello")
+      (let ((history (llm-api--platform-history platform)))
+        (test-assert "wrapper: delegated for normal prompt" (= delegations 1))
+        (test-assert "wrapper: appended user message"
+                     (eq (alist-get :role (car (last history))) :user))
+        (test-assert "wrapper: user content set"
+                     (equal (alist-get :content (car (last history))) "hello")))
+      ;; Empty prompt should rewrite last assistant as continuation-formatted msg
+      ;; when trailing message is assistant.
+      (setf (llm-api--platform-history platform)
+            '(((:role . :user) (:content . "q"))
+              ((:role . :assistant) (:content . "a"))))
+      (llm-api--generate-streaming platform "")
+      (let* ((history (llm-api--platform-history platform))
+             (last-msg (car (last history))))
+        (test-assert "wrapper: delegated for empty prompt" (= delegations 2))
+        (test-assert "wrapper: continuation keeps assistant role"
+                     (eq (alist-get :role last-msg) :assistant))
+        (test-assert "wrapper: continuation content preserved"
+                     (equal (alist-get :content last-msg) "a"))))))
+
+(defun test-history-refactor-from-history-no-mutation ()
+  "Test pure generation path does not mutate chat history."
+  (test-log "\n== History Refactor: Pure Generation No Mutation ==")
+  (let* ((platform (llm-api--platform-create
+                    :name "hist-pure-test"
+                    :url "http://localhost:1/chat/completions"
+                    :selected-model "test-model"
+                    :history '(((:role . :user) (:content . "u1"))
+                               ((:role . :assistant) (:content . "a1")))))
+         (before (copy-tree (llm-api--platform-history platform))))
+    ;; Stub make-process so we don't hit network in this unit test.
+    (let ((orig-make-process (symbol-function 'make-process)))
+      (cl-letf (((symbol-function 'make-process)
+                 (lambda (&rest _args)
+                   ;; Return a short-lived local process object.
+                   (funcall orig-make-process
+                            :name "llm-api-test-dummy"
+                            :command '("sh" "-c" "exit 0")
+                            :noquery t))))
+        (llm-api--generate-streaming-from-history
+         platform
+         :on-data (lambda (_text))
+         :on-finish (lambda ())
+         :on-error (lambda (_msg _partial)))))
+    (test-assert "from-history: history unchanged"
+                 (equal before (llm-api--platform-history platform)))))
+
+;; ============================================================
 ;; E2E tests: live providers
 ;; ============================================================
 
@@ -1479,6 +1546,8 @@ included 'invisible'. Overlays are immune to this."
   ;; Unit tests (no network)
   (test-sse-parser)
   (test-ndjson-parser)
+  (test-history-refactor-wrapper-mutation)
+  (test-history-refactor-from-history-no-mutation)
 
   ;; Load tokens
   (load-config-tokens)
@@ -1601,5 +1670,6 @@ included 'invisible'. Overlays are immune to this."
 
   (kill-emacs (if (= test-fail 0) 0 1)))
 
-(run-all-tests)
+(unless (bound-and-true-p llm-api-test-sse-skip-auto-run)
+  (run-all-tests))
 ;;; test-sse.el ends here
