@@ -17,6 +17,6 @@
    :name "kimi"
    :url "https://api.kimi.com/coding/v1/chat/completions"
    :token token
-   :selected-model (or selected-model "k2p5")
+   :selected-model (or selected-model "kimi-for-coding")
    :system-prompt "You are a helpful assistant."
    :params '(:temperature 0.6)))
