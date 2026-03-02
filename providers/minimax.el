@@ -6,6 +6,15 @@
                                  (:constructor llm-api--minimax-create)
                                  (:copier nil)))
 
+;; MiniMax doesn't have a /models endpoint, so we return a static list
+(cl-defmethod llm-api--get-available-models ((_platform llm-api--minimax))
+  "Return static list of MiniMax models."
+  '("MiniMax-M2.5"
+    "MiniMax-M2.5-highspeed"
+    "MiniMax-M2.1"
+    "MiniMax-M2.1-highspeed"
+    "MiniMax-M2"))
+
 (defun llm--create-minimax-platform (token &optional selected-model)
   (llm-api--minimax-create
    :name "minimax"
