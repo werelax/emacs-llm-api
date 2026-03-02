@@ -75,7 +75,12 @@ is appended to response and streamed via ON-DATA."
                   (llm-api--minimax--emit-reasoning platform (substring text 0 close-pos))
                   (llm-api--minimax--finalize-reasoning platform)
                   (setq in-think nil)
-                  (setq text (substring text (+ close-pos (length close)))))
+                  ;; MiniMax often emits extra newlines right after </think>.
+                  ;; Drop leading whitespace here so collapsed reasoning widgets
+                  ;; don't leave large visible gaps before following content/tools.
+                  (setq text (replace-regexp-in-string
+                              "\\`[ \t\n\r]+" ""
+                              (substring text (+ close-pos (length close))))))
               (pcase-let* ((`(,emit . ,new-carry)
                             (llm-api--minimax--split-partial-marker text close)))
                 (llm-api--minimax--emit-reasoning platform emit)
