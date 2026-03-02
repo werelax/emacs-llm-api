@@ -20,6 +20,6 @@
    :name "minimax"
    :url "https://api.minimax.io/v1/chat/completions"
    :token token
-   :selected-model (or selected-model "MiniMax-M2.5")
+   :selected-model (or selected-model "MiniMax-M2.5-highspeed")
    :system-prompt "You are a helpful assistant."
    :params '(:temperature 0.7)))
