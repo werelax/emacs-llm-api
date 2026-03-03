@@ -61,6 +61,11 @@
   (setf (llm-api--platform-available-models platform) *open-router-models*)
   (mapcar (lambda (m) (plist-get m :name)) *open-router-models*))
 
+(cl-defmethod llm-api--invalidate-model-cache ((platform llm-api--open-router))
+  "Invalidate OpenRouter global model cache for PLATFORM."
+  (setq *open-router-models* nil)
+  (cl-call-next-method))
+
 ;; fix the payload a little bit
 
 (cl-defmethod llm-api--get-request-payload ((platform llm-api--open-router))

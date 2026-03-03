@@ -33,6 +33,11 @@
   (setf (llm-api--platform-available-models platform) *hyperbolic-models*)
   *hyperbolic-models*)
 
+(cl-defmethod llm-api--invalidate-model-cache ((platform llm-api--hyperbolic))
+  "Invalidate Hyperbolic global model cache for PLATFORM."
+  (setq *hyperbolic-models* nil)
+  (cl-call-next-method))
+
 ;; fix the payload a little bit
 
 (cl-defmethod llm-api--get-request-payload ((platform llm-api--hyperbolic))

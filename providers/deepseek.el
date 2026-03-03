@@ -29,6 +29,11 @@
   (setf (llm-api--platform-available-models platform) *deepseek-models*)
   *deepseek-models*)
 
+(cl-defmethod llm-api--invalidate-model-cache ((platform llm-api--deepseek))
+  "Invalidate DeepSeek global model cache for PLATFORM."
+  (setq *deepseek-models* nil)
+  (cl-call-next-method))
+
 (cl-defmethod llm-api--format-continuation-message ((platform llm-api--deepseek) last-response)
   "Format LAST-RESPONSE as a continuation message for chat history."
   `((:role . :assistant) (:content . ,last-response) (:prefix . t)))

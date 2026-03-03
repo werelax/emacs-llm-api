@@ -7,6 +7,16 @@
               (if (consp m) (plist-get m :name) m))
             models)))
 
+(cl-defmethod llm-api--invalidate-model-cache ((platform llm-api--platform))
+  "Invalidate cached model data for PLATFORM."
+  (setf (llm-api--platform-available-models platform) nil)
+  nil)
+
+(cl-defmethod llm-api--refresh-model-metadata ((platform llm-api--platform))
+  "Force refresh model metadata/list for PLATFORM and return available models."
+  (llm-api--invalidate-model-cache platform)
+  (llm-api--get-available-models platform))
+
 (cl-defmethod llm-api--set-selected-model ((platform llm-api--platform) model-name)
   "Set MODEL as selected for PLATFORM."
   (let* ((models (llm-api--platform-available-models platform))

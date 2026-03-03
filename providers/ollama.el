@@ -54,6 +54,11 @@
   (setf (llm-api--platform-available-models platform) *ollama-models*)
   (cl-call-next-method))
 
+(cl-defmethod llm-api--invalidate-model-cache ((platform llm-api--ollama))
+  "Invalidate Ollama global model cache for PLATFORM."
+  (setq *ollama-models* nil)
+  (cl-call-next-method))
+
 ;; select server
 
 (defvar *ollama-inference-servers* '((:local . "http://localhost:11434")))

@@ -27,6 +27,11 @@
   (setf (llm-api--platform-available-models platform) *koboldcpp-models*)
   *koboldcpp-models*)
 
+(cl-defmethod llm-api--invalidate-model-cache ((platform llm-api--koboldcpp))
+  "Invalidate KoboldCpp global model cache for PLATFORM."
+  (setq *koboldcpp-models* nil)
+  (cl-call-next-method))
+
 ;; fix the payload a little bit
 
 (cl-defmethod llm-api--get-request-payload ((platform llm-api--koboldcpp))

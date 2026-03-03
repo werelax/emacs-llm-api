@@ -29,6 +29,11 @@
   (setf (llm-api--platform-available-models platform) *groq-models*)
   *groq-models*)
 
+(cl-defmethod llm-api--invalidate-model-cache ((platform llm-api--groq))
+  "Invalidate Groq global model cache for PLATFORM."
+  (setq *groq-models* nil)
+  (cl-call-next-method))
+
 ;; fix the payload a little bit
 
 (cl-defmethod llm-api--get-request-payload ((platform llm-api--groq))

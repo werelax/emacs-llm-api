@@ -29,6 +29,11 @@
   (setf (llm-api--platform-available-models platform) *featherless-models*)
   *featherless-models*)
 
+(cl-defmethod llm-api--invalidate-model-cache ((platform llm-api--featherless))
+  "Invalidate Featherless global model cache for PLATFORM."
+  (setq *featherless-models* nil)
+  (cl-call-next-method))
+
 ;; fix the payload a little bit
 
 (cl-defmethod llm-api--get-request-payload ((platform llm-api--featherless))

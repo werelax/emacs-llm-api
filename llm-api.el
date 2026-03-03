@@ -151,6 +151,12 @@ Replaces any existing tool with the same NAME."
 (cl-defgeneric llm-api--get-available-models (platform)
   "Get available models for PLATFORM.")
 
+(cl-defgeneric llm-api--invalidate-model-cache (platform)
+  "Invalidate cached model metadata/list for PLATFORM.")
+
+(cl-defgeneric llm-api--refresh-model-metadata (platform)
+  "Force refresh of model metadata/list for PLATFORM and return available models.")
+
 (cl-defgeneric llm-api--set-selected-model (platform model)
   "Set selected MODEL for PLATFORM.")
 

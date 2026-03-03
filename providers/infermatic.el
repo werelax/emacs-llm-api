@@ -29,6 +29,11 @@
   (setf (llm-api--platform-available-models platform) *infermatic-models*)
   *infermatic-models*)
 
+(cl-defmethod llm-api--invalidate-model-cache ((platform llm-api--infermatic))
+  "Invalidate Infermatic global model cache for PLATFORM."
+  (setq *infermatic-models* nil)
+  (cl-call-next-method))
+
 ;; fix the payload a little bit
 
 (cl-defmethod llm-api--get-request-payload ((platform llm-api--infermatic))

@@ -36,6 +36,11 @@
         (llm-api--openai-models-cache platform))
   (llm-api--openai-models-cache platform))
 
+(cl-defmethod llm-api--invalidate-model-cache ((platform llm-api--openai))
+  "Invalidate OpenAI-family model caches for PLATFORM."
+  (setf (llm-api--openai-models-cache platform) nil)
+  (cl-call-next-method))
+
 ;; fix the payload a little bit
 
 (cl-defmethod llm-api--get-request-payload ((platform llm-api--openai))
