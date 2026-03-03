@@ -40,6 +40,44 @@ DEF is an OpenAI-schema tool definition alist, and FN is called as
 (defvar llm-api-default-tool-executor nil
   "Default tool executor function, set by `llm-api-register-tool'.")
 
+(defvar llm-api-model-capabilities-overrides nil
+  "User overrides for model capabilities.
+Structure: ((PROVIDER . ((MODEL-ID . PLIST) ...)) ...)
+Where PLIST may contain keys like :context-window, :max-output-tokens, :source.")
+
+(defun llm-api--plist-merge (&rest plists)
+  "Merge PLISTS left-to-right, last value wins for duplicate keys."
+  (let ((result nil))
+    (dolist (pl plists)
+      (while pl
+        (setq result (plist-put result (car pl) (cadr pl))
+              pl (cddr pl))))
+    result))
+
+(defun llm-api-set-model-capabilities (provider model-id &rest capabilities)
+  "Set model CAPABILITIES override for PROVIDER and MODEL-ID.
+PROVIDER is a string (e.g. \"minimax\"), MODEL-ID is provider model id string.
+CAPABILITIES is a plist, e.g. (:context-window 1000000 :source :override)."
+  (let* ((provider-name (if (symbolp provider) (symbol-name provider) provider))
+         (provider-entry (assoc provider-name llm-api-model-capabilities-overrides))
+         (models (copy-tree (cdr provider-entry)))
+         (existing (assoc model-id models))
+         (new-caps (llm-api--plist-merge (cdr existing) capabilities)))
+    (if existing
+        (setcdr existing new-caps)
+      (push (cons model-id new-caps) models))
+    (if provider-entry
+        (setcdr provider-entry models)
+      (push (cons provider-name models) llm-api-model-capabilities-overrides))))
+
+(defun llm-api--lookup-model-capabilities-override (platform model-id)
+  "Return capability override plist for PLATFORM and MODEL-ID, or nil."
+  (when (and platform model-id)
+    (let* ((provider-name (llm-api--platform-name platform))
+           (provider-entry (assoc provider-name llm-api-model-capabilities-overrides))
+           (model-entry (and provider-entry (assoc model-id (cdr provider-entry)))))
+      (cdr model-entry))))
+
 (defun llm-api--tool-registry-dispatch (name parsed-args _raw-args callback)
   "Dispatch tool NAME to its registered handler.
 PARSED-ARGS is the parsed arguments plist, CALLBACK receives the result string."
@@ -108,6 +146,18 @@ Replaces any existing tool with the same NAME."
 
 (cl-defgeneric llm-api--get-model-name (platform model)
   "Get the model name for PLATFORM.")
+
+(cl-defgeneric llm-api--get-model-capabilities (platform &optional model)
+  "Get capability plist for MODEL on PLATFORM.
+Expected keys include :context-window, :max-output-tokens and :source.")
+
+(defun llm-api--get-model-context-window (platform &optional model)
+  "Return known context-window tokens for MODEL on PLATFORM, or nil."
+  (plist-get (llm-api--get-model-capabilities platform model) :context-window))
+
+(defun llm-api--get-model-max-output-tokens (platform &optional model)
+  "Return known max output tokens for MODEL on PLATFORM, or nil."
+  (plist-get (llm-api--get-model-capabilities platform model) :max-output-tokens))
 
 (cl-defgeneric llm-api--kill-process (platform)
   "Kill the process for PLATFORM.")

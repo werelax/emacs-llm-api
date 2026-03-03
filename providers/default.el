@@ -29,6 +29,54 @@
       model
     (plist-get model :name)))
 
+(defun llm-api--maybe-number (value)
+  "Convert VALUE to number when possible, else nil."
+  (cond
+   ((numberp value) value)
+   ((and (stringp value)
+         (string-match-p "\\`[0-9]+\\(?:\\.[0-9]+\\)?\\'" value))
+    (string-to-number value))
+   (t nil)))
+
+(cl-defmethod llm-api--get-model-capabilities ((platform llm-api--platform) &optional model)
+  "Get capability plist for MODEL on PLATFORM.
+Default implementation reads known keys from model plist + user overrides."
+  (let* ((model (or model (llm-api--platform-selected-model platform)))
+         (model-id (cond
+                    ((stringp model) model)
+                    ((consp model)
+                     (or (plist-get model :model)
+                         (plist-get model :id)
+                         (plist-get model :name)))))
+         (model-meta (cond
+                      ((consp model) model)
+                      ((and (stringp model-id)
+                            (listp (llm-api--platform-available-models platform)))
+                       (seq-find (lambda (m)
+                                   (and (consp m)
+                                        (or (string= (or (plist-get m :model) "") model-id)
+                                            (string= (or (plist-get m :id) "") model-id)
+                                            (string= (or (plist-get m :name) "") model-id))))
+                                 (llm-api--platform-available-models platform)))))
+         (from-model (when (consp model-meta)
+                       (let ((ctx (llm-api--maybe-number
+                                   (or (plist-get model-meta :context-window)
+                                       (plist-get model-meta :context_length)
+                                       (plist-get model-meta :tokenLimit))))
+                             (max-out (llm-api--maybe-number
+                                       (or (plist-get model-meta :max-output-tokens)
+                                           (plist-get model-meta :max_completion_tokens)
+                                           (plist-get model-meta :max_tokens))))
+                             (src (or (plist-get model-meta :source) :provider)))
+                         (when (or ctx max-out)
+                           (list :context-window ctx
+                                 :max-output-tokens max-out
+                                 :source src)))))
+         (override (llm-api--lookup-model-capabilities-override platform model-id))
+         (caps (llm-api--plist-merge from-model override)))
+    (when (and model-id caps)
+      (plist-put caps :model model-id))))
+
 (cl-defmethod llm-api--kill-process ((platform llm-api--platform))
   "Kill the process for PLATFORM."
   (when (process-live-p (llm-api--platform-process platform))

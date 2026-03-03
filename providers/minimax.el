@@ -20,6 +20,28 @@
     (setf (llm-api--platform-available-models platform) models)
     models))
 
+(cl-defmethod llm-api--get-model-capabilities ((platform llm-api--minimax) &optional model)
+  "Get capability plist for MiniMax MODEL.
+Defaults to 204.8k context and optimistic 64k max output unless overridden."
+  (let* ((model (or model (llm-api--platform-selected-model platform)))
+         (model-id (if (stringp model)
+                       model
+                     (or (plist-get model :model)
+                         (plist-get model :id)
+                         (plist-get model :name))))
+         (known-models '("MiniMax-M2.5-highspeed"
+                         "MiniMax-M2.5"
+                         "MiniMax-M2.1-highspeed"
+                         "MiniMax-M2.1"
+                         "MiniMax-M2"))
+         (provider-defaults (when (and model-id (member model-id known-models))
+                              (list :model model-id
+                                    :context-window 204800
+                                    :max-output-tokens 64000
+                                    :source :provider-default)))
+         (fallback (cl-call-next-method platform model)))
+    (llm-api--plist-merge provider-defaults fallback)))
+
 (defun llm-api--minimax--split-partial-marker (text marker)
   "Split TEXT into (EMIT . CARRY) for possible partial MARKER at the end.
 CARRY is the longest suffix of TEXT that matches a prefix of MARKER."
