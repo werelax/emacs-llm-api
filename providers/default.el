@@ -67,7 +67,7 @@ Default implementation reads known keys from model plist + user overrides."
                                        (or (plist-get model-meta :max-output-tokens)
                                            (plist-get model-meta :max_completion_tokens)
                                            (plist-get model-meta :max_tokens))))
-                             (src (or (plist-get model-meta :source) :provider)))
+                             (src (or (plist-get model-meta :source) :provider-api)))
                          (when (or ctx max-out)
                            (list :context-window ctx
                                  :max-output-tokens max-out

@@ -45,13 +45,26 @@ DEF is an OpenAI-schema tool definition alist, and FN is called as
 Structure: ((PROVIDER . ((MODEL-ID . PLIST) ...)) ...)
 Where PLIST may contain keys like :context-window, :max-output-tokens, :source.")
 
+(defun llm-api--normalize-capability-source (source)
+  "Normalize capability SOURCE keywords to canonical values.
+Canonical values are :provider-api, :provider-default, and :override."
+  (pcase source
+    (:provider :provider-api)
+    ("provider" :provider-api)
+    (_ source)))
+
 (defun llm-api--plist-merge (&rest plists)
   "Merge PLISTS left-to-right, last value wins for duplicate keys."
   (let ((result nil))
     (dolist (pl plists)
       (while pl
-        (setq result (plist-put result (car pl) (cadr pl))
-              pl (cddr pl))))
+        (let* ((key (car pl))
+               (val (cadr pl))
+               (val (if (eq key :source)
+                        (llm-api--normalize-capability-source val)
+                      val)))
+          (setq result (plist-put result key val)
+                pl (cddr pl)))))
     result))
 
 (defun llm-api-set-model-capabilities (provider model-id &rest capabilities)

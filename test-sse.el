@@ -238,6 +238,70 @@ Returns plist (:response STRING :error STRING :finish-reason STRING :timed-out B
     (test-assert "from-history: history unchanged"
                  (equal before (llm-api--platform-history platform)))))
 
+(defun test-model-capabilities-default-extraction ()
+  "Test default capability extraction from model plist metadata."
+  (test-log "\n== Model Capabilities: Default Extraction ==")
+  (let* ((platform (llm-api--platform-create
+                    :name "caps-default-test"
+                    :url "http://localhost:1"
+                    :available-models
+                    '((:name "model-a" :model "model-a" :context_length "131072" :max_completion_tokens "8192")
+                      (:name "model-b" :model "model-b" :context-window 32768 :max-output-tokens 4096 :source :provider-default))
+                    :selected-model "model-a"))
+         (caps-a (llm-api--get-model-capabilities platform "model-a"))
+         (caps-b (llm-api--get-model-capabilities platform "model-b")))
+    (test-assert "caps default: model-a context parsed"
+                 (= (plist-get caps-a :context-window) 131072))
+    (test-assert "caps default: model-a max-output parsed"
+                 (= (plist-get caps-a :max-output-tokens) 8192))
+    (test-assert "caps default: model-a source canonicalized"
+                 (eq (plist-get caps-a :source) :provider-api))
+    (test-assert "caps default: helper context works"
+                 (= (llm-api--get-model-context-window platform "model-a") 131072))
+    (test-assert "caps default: helper max-output works"
+                 (= (llm-api--get-model-max-output-tokens platform "model-a") 8192))
+    (test-assert "caps default: model-b keeps provider-default"
+                 (eq (plist-get caps-b :source) :provider-default))))
+
+(defun test-model-capabilities-override-precedence ()
+  "Test user overrides merge over provider/default capability metadata."
+  (test-log "\n== Model Capabilities: Override Precedence ==")
+  (let ((llm-api-model-capabilities-overrides nil)
+        (platform (llm-api--platform-create
+                   :name "caps-override-test"
+                   :url "http://localhost:1"
+                   :available-models
+                   '((:name "model-x" :model "model-x" :context-window 100000 :max-output-tokens 5000 :source :provider-api))
+                   :selected-model "model-x")))
+    (llm-api-set-model-capabilities "caps-override-test" "model-x"
+                                    :max-output-tokens 9999
+                                    :source :override)
+    (let ((caps (llm-api--get-model-capabilities platform "model-x")))
+      (test-assert "caps override: context kept from provider"
+                   (= (plist-get caps :context-window) 100000))
+      (test-assert "caps override: max-output overridden"
+                   (= (plist-get caps :max-output-tokens) 9999))
+      (test-assert "caps override: source overridden"
+                   (eq (plist-get caps :source) :override)))))
+
+(defun test-kimi-capability-alias-normalization ()
+  "Test Kimi alias normalization for selection and capability lookup."
+  (test-log "\n== Kimi Capabilities: Alias Normalization ==")
+  (let* ((platform (llm--create-kimi-platform "" "kimi-k2.5"))
+         (_ (llm-api--get-available-models platform))
+         (selected (llm-api--get-selected-model platform))
+         (caps (llm-api--get-model-capabilities platform)))
+    (test-assert "kimi alias: selected canonicalized"
+                 (equal selected "kimi-for-coding/k2p5"))
+    (test-assert "kimi alias: context from canonical model"
+                 (= (plist-get caps :context-window) 262144))
+    (test-assert "kimi alias: source provider-default"
+                 (eq (plist-get caps :source) :provider-default))
+    (llm-api--set-selected-model platform "kimi-for-coding")
+    (test-assert "kimi alias: set-selected canonicalized"
+                 (equal (llm-api--get-selected-model platform)
+                        "kimi-for-coding/k2p5"))))
+
 ;; ============================================================
 ;; E2E tests: live providers
 ;; ============================================================
@@ -1548,6 +1612,9 @@ included 'invisible'. Overlays are immune to this."
   (test-ndjson-parser)
   (test-history-refactor-wrapper-mutation)
   (test-history-refactor-from-history-no-mutation)
+  (test-model-capabilities-default-extraction)
+  (test-model-capabilities-override-precedence)
+  (test-kimi-capability-alias-normalization)
 
   ;; Load tokens
   (load-config-tokens)
