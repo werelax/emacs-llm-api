@@ -27,6 +27,10 @@
     (setf (plist-get payload :max_tokens) 120000)
     payload))
 
+(cl-defmethod llm-api--invalidate-model-cache ((_platform llm-api--pplx))
+  "Keep static model list for PPLX; no external model cache to invalidate."
+  nil)
+
 ;; SSE parsing and JSON handling now inherited from the default implementation.
 ;; The default llm-api--response-filter handles partial-line buffering and error detection.
 ;; The default llm-api--handle-sse-data handles OpenAI-compatible JSON extraction.

@@ -350,6 +350,18 @@ Returns plist (:response STRING :error STRING :finish-reason STRING :timed-out B
       (test-assert "openrouter invalidate: platform available cleared"
                    (null (llm-api--platform-available-models platform))))))
 
+(defun test-model-metadata-refresh-static-provider ()
+  "Test refresh keeps static model lists for providers without external caches."
+  (test-log "\n== Model Metadata Refresh: Static Provider ==")
+  (let* ((platform (llm--create-pplx-platform ""))
+         (before (llm-api--get-available-models platform))
+         (refreshed (llm-api--refresh-model-metadata platform))
+         (after-slot (llm-api--platform-available-models platform)))
+    (test-assert "static refresh: before list non-empty" (> (length before) 0))
+    (test-assert "static refresh: returns non-empty list" (> (length refreshed) 0))
+    (test-assert "static refresh: preserves list contents" (equal before refreshed))
+    (test-assert "static refresh: slot remains populated" (equal before after-slot))))
+
 ;; ============================================================
 ;; E2E tests: live providers
 ;; ============================================================
@@ -1666,6 +1678,7 @@ included 'invisible'. Overlays are immune to this."
   (test-model-metadata-refresh-default-api)
   (test-model-metadata-invalidate-openai-cache)
   (test-model-metadata-invalidate-openrouter-cache)
+  (test-model-metadata-refresh-static-provider)
 
   ;; Load tokens
   (load-config-tokens)
