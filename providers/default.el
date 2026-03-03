@@ -7,9 +7,10 @@
               (if (consp m) (plist-get m :name) m))
             models)))
 
-(cl-defmethod llm-api--invalidate-model-cache ((platform llm-api--platform))
-  "Invalidate cached model data for PLATFORM."
-  (setf (llm-api--platform-available-models platform) nil)
+(cl-defmethod llm-api--invalidate-model-cache ((_platform llm-api--platform))
+  "Invalidate cached model data for PLATFORM.
+Default is a no-op to preserve static model lists and stale fallback data.
+Providers with external model caches should override this method."
   nil)
 
 (cl-defmethod llm-api--refresh-model-metadata ((platform llm-api--platform))

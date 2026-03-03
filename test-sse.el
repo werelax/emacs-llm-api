@@ -326,8 +326,20 @@ Returns plist (:response STRING :error STRING :finish-reason STRING :timed-out B
                      (equal (llm-api--platform-available-models platform)
                             '("fresh-1" "fresh-2")))))))
 
+(defun test-model-metadata-invalidate-default-noop ()
+  "Test default invalidation keeps platform available-models intact."
+  (test-log "\n== Model Metadata Refresh: Default Invalidate No-op ==")
+  (let ((platform (llm-api--platform-create
+                   :name "invalidate-default-test"
+                   :url "http://localhost:1"
+                   :available-models '("static-a" "static-b"))))
+    (llm-api--invalidate-model-cache platform)
+    (test-assert "invalidate default: available-models preserved"
+                 (equal (llm-api--platform-available-models platform)
+                        '("static-a" "static-b")))))
+
 (defun test-model-metadata-invalidate-openai-cache ()
-  "Test OpenAI-family cache invalidation clears both caches."
+  "Test OpenAI-family cache invalidation clears instance cache only."
   (test-log "\n== Model Metadata Refresh: OpenAI Cache Invalidation ==")
   (let ((platform (llm--create-openai-platform "" "gpt-4o")))
     (setf (llm-api--openai-models-cache platform) '("a" "b"))
@@ -335,11 +347,11 @@ Returns plist (:response STRING :error STRING :finish-reason STRING :timed-out B
     (llm-api--invalidate-model-cache platform)
     (test-assert "openai invalidate: instance cache cleared"
                  (null (llm-api--openai-models-cache platform)))
-    (test-assert "openai invalidate: platform available cleared"
-                 (null (llm-api--platform-available-models platform)))))
+    (test-assert "openai invalidate: platform available preserved"
+                 (equal (llm-api--platform-available-models platform) '("a" "b")))))
 
 (defun test-model-metadata-invalidate-openrouter-cache ()
-  "Test OpenRouter cache invalidation clears global + platform caches."
+  "Test OpenRouter cache invalidation clears global cache and keeps platform list."
   (test-log "\n== Model Metadata Refresh: OpenRouter Cache Invalidation ==")
   (let ((*open-router-models* '((:model "a" :name "A"))))
     (let ((platform (llm--create-open-router-platform "" "a")))
@@ -347,8 +359,9 @@ Returns plist (:response STRING :error STRING :finish-reason STRING :timed-out B
       (llm-api--invalidate-model-cache platform)
       (test-assert "openrouter invalidate: global cache cleared"
                    (null *open-router-models*))
-      (test-assert "openrouter invalidate: platform available cleared"
-                   (null (llm-api--platform-available-models platform))))))
+      (test-assert "openrouter invalidate: platform available preserved"
+                   (equal (llm-api--platform-available-models platform)
+                          '((:model "a" :name "A")))))))
 
 (defun test-model-metadata-refresh-static-provider ()
   "Test refresh keeps static model lists for providers without external caches."
@@ -1676,6 +1689,7 @@ included 'invisible'. Overlays are immune to this."
   (test-model-capabilities-override-precedence)
   (test-kimi-capability-alias-normalization)
   (test-model-metadata-refresh-default-api)
+  (test-model-metadata-invalidate-default-noop)
   (test-model-metadata-invalidate-openai-cache)
   (test-model-metadata-invalidate-openrouter-cache)
   (test-model-metadata-refresh-static-provider)
